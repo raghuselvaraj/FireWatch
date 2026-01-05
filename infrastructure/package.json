@@ -1,0 +1,40 @@
+{
+  "name": "firewatch-infrastructure",
+  "version": "1.0.0",
+  "description": "AWS CDK infrastructure for FireWatch",
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk",
+    "deploy": "cdk deploy",
+    "deploy:all": "cdk deploy --all",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "destroy": "cdk destroy"
+  },
+  "keywords": [
+    "aws",
+    "cdk",
+    "kafka",
+    "fire-detection",
+    "ml"
+  ],
+  "author": "FireWatch Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "20.10.0",
+    "aws-cdk": "2.120.0",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "ts-node": "^10.9.1",
+    "typescript": "~5.3.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.120.0",
+    "constructs": "^10.3.0"
+  }
+}
+

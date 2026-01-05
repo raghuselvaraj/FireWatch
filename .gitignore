@@ -1,0 +1,64 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+.DS_Store
+*.log
+.env
+# Video files (but keep test_files structure)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+
+# Models (keep directory structure, ignore contents)
+models/*
+!models/.gitkeep
+*.pkl
+*.h5
+*.pb
+*.pt
+yolov8n.pt  # YOLOv8 fallback model (not needed, use fire-detect-nn instead)
+
+# Logs
+logs/
+*.log
+
+# Clips
+clips/
+
+# Test files and results
+test_files/
+test_results/
+
+# Local fire-detect-nn (now installed to site-packages)
+fire-detect-nn/
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+*.pyc
+__pycache__/
+
+# CDK
+infrastructure/cdk.out/
+infrastructure/node_modules/
+infrastructure/.env
+*.js.map
+
+# AWS CDK
+cdk.context.json
+cdk.out/
+*.swp
+*.swo
+*~
