@@ -3,11 +3,18 @@ Test script to process test videos through the FireWatch pipeline.
 
 This script processes all videos in the test_files directory and sends them
 through the pipeline for fire detection.
+
+Usage:
+    python3 scripts/test_with_videos.py [video_path]
+    
+    If video_path is provided, only that video will be processed.
+    If not provided, processes all videos in test_files/ directory.
 """
 import os
 import sys
 import time
 import subprocess
+import argparse
 from pathlib import Path
 
 # Add parent directory to path
@@ -17,8 +24,8 @@ from producer.video_producer import VideoProducer
 import config
 
 
-def find_test_videos(base_path: str = "test_files") -> list:
-    """Find all video files in the test_files directory."""
+def find_test_videos(base_path: str = "test_files", video_name: str = None) -> list:
+    """Find all video files in the test_files directory, or a specific video if specified."""
     video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv']
     videos = []
     
@@ -27,6 +34,29 @@ def find_test_videos(base_path: str = "test_files") -> list:
         print(f"Test files directory not found: {base_path}")
         return videos
     
+    # If specific video name is provided, only find that video
+    if video_name:
+        # Try exact match first (with and without extension)
+        for ext in video_extensions:
+            # Exact filename match
+            exact_match = base.rglob(f"{video_name}{ext}")
+            videos.extend(exact_match)
+            # Pattern match as fallback
+            pattern_match = base.rglob(f"*{video_name}*{ext}")
+            videos.extend(pattern_match)
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_videos = []
+        for v in videos:
+            if v not in seen:
+                seen.add(v)
+                unique_videos.append(v)
+        if unique_videos:
+            return sorted(unique_videos)
+        else:
+            print(f"⚠️  Video '{video_name}' not found, searching for all videos...")
+    
+    # Otherwise find all videos
     for ext in video_extensions:
         videos.extend(base.rglob(f"*{ext}"))
     
@@ -81,20 +111,42 @@ def main():
         print("  Start Kafka manually and check KAFKA_BOOTSTRAP_SERVERS in .env")
         sys.exit(1)
     
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Process videos through FireWatch pipeline')
+    parser.add_argument('video', nargs='?', help='Path to a specific video file to process (optional)')
+    args = parser.parse_args()
+    
     # Find test videos
     print("\n2. Finding test videos...")
-    videos = find_test_videos()
+    videos = []
     
-    if not videos:
-        print("✗ No test videos found in test_files/ directory")
-        print("\nExpected structure:")
-        print("  test_files/")
-        print("    trail_cams/")
-        print("      actual_fires/")
-        print("        fire_test_1.mp4")
-        print("      no_fires/")
-        print("        no_fire_test_1.mp4")
-        sys.exit(1)
+    if args.video:
+        # User provided a specific video path
+        video_path = Path(args.video)
+        if video_path.exists() and video_path.is_file():
+            print(f"   Processing specified video: {video_path}")
+            videos = [video_path]
+        else:
+            print(f"✗ Video file not found: {video_path}")
+            sys.exit(1)
+    else:
+        # Default to fire-short-3 for testing if no argument provided
+        video_name = os.getenv("TEST_VIDEO_NAME", "fire-short-3")
+        print(f"   Looking for video: {video_name}")
+        videos = find_test_videos(video_name=video_name)
+        
+        if not videos:
+            print("✗ No test videos found in test_files/ directory")
+            print("\nExpected structure:")
+            print("  test_files/")
+            print("    trail_cams/")
+            print("      actual_fires/")
+            print("        fire_test_1.mp4")
+            print("      no_fires/")
+            print("        no_fire_test_1.mp4")
+            print("\nOr provide a video path as an argument:")
+            print("  python3 scripts/test_with_videos.py /path/to/video.mp4")
+            sys.exit(1)
     
     print(f"✓ Found {len(videos)} test video(s)")
     for video in videos:
@@ -102,17 +154,7 @@ def main():
     
     # Process videos
     print(f"\n3. Processing {len(videos)} video(s)...")
-    print("\n⚠️  IMPORTANT: Make sure the fire detection stream is running!")
-    print("   Run in a separate terminal:")
-    print("   python3 streams/fire_detection_stream.py")
-    print("\n   The stream processor must be running BEFORE processing videos.")
-    print("\n   Starting in 3 seconds... (Press Ctrl+C to cancel)")
-    
-    try:
-        time.sleep(3)
-    except KeyboardInterrupt:
-        print("\nCancelled.")
-        sys.exit(0)
+    print("   (Frames will be processed in real-time as they're published)")
     
     results = []
     for i, video in enumerate(videos, 1):

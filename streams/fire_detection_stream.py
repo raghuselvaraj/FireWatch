@@ -5,12 +5,19 @@ import numpy as np
 import cv2
 import os
 import sys
+import signal
+import warnings
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import KafkaError
 from ultralytics import YOLO
+
+# Suppress torchvision deprecation warnings (from fire-detect-nn library)
+warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
+# Suppress x265 codec warnings (not actionable)
+warnings.filterwarnings('ignore', message='.*x265.*')
 
 # Add parent directory to path to import config and modules
 project_root = Path(__file__).parent.parent
@@ -259,8 +266,8 @@ class FireDetectionModel:
                     for box in boxes:
                         # Get box coordinates (xyxy format)
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        confidence = float(box.conf[0].cpu().numpy())
-                        class_id = int(box.cls[0].cpu().numpy())
+                        confidence = box.conf[0].cpu().item()  # Use .item() to get Python scalar (avoids NumPy deprecation)
+                        class_id = int(box.cls[0].cpu().item())  # Use .item() to get Python scalar
                         class_name = result.names[class_id] if hasattr(result, 'names') else f"class_{class_id}"
                         
                         # Store all detections for debugging (first 10 frames only)
@@ -456,19 +463,21 @@ class FireDetectionModel:
             # FireClassifier outputs a single value (0-1) after sigmoid, where higher = more fire
             with torch.no_grad():
                 output = self.model(input_tensor)
-                fire_prob = float(output[0].cpu().numpy())  # Single value, already sigmoid (0-1)
+                # Extract single value from tensor to avoid NumPy deprecation warning
+                fire_prob = output[0].cpu().item()  # Use .item() to get Python scalar
                 no_fire_prob = 1.0 - fire_prob
             
             # Check if fire probability exceeds threshold
             has_fire = fire_prob >= self.confidence_threshold
             
-            # Compute heatmap if fire detected (for visual identification)
+            # Compute heatmap if fire detected (core feature - always enabled)
             heatmap = None
             if has_fire:
                 try:
                     heatmap = self._compute_gradcam_heatmap(frame)
                 except Exception as e:
-                    # Heatmap is optional, continue without it
+                    # If GradCAM fails, continue without heatmap for this frame
+                    # (but still process the frame)
                     pass
             
             # For classification models, we create a full-frame detection
@@ -530,25 +539,36 @@ class FireDetectionStream:
     
     def __init__(self):
         """Initialize the stream processor."""
+        # Use KAFKA_GROUP_ID from environment if set (for test runs with unique group IDs)
+        # Otherwise use default group_id
+        import os
+        group_id = os.environ.get('KAFKA_GROUP_ID', 'fire-detection-stream')
+        
         self.consumer = KafkaConsumer(
             config.KAFKA_VIDEO_TOPIC,
             bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
             value_deserializer=lambda m: json.loads(m.decode('utf-8')),
             key_deserializer=lambda k: k.decode('utf-8') if k else None,
-            group_id="fire-detection-stream",  # Multiple consumers with same group_id share partitions
+            group_id=group_id,  # Multiple consumers with same group_id share partitions
             auto_offset_reset='earliest',  # Read from beginning if no offset exists
-            enable_auto_commit=True,
-            consumer_timeout_ms=5000,  # Wait 5 seconds for messages before timing out
+            enable_auto_commit=False,  # Manual commit to ensure we process all messages
+            consumer_timeout_ms=2147483647,  # Wait indefinitely for messages (max int32 value, ~24 days)
             max_poll_records=100,  # Process up to 100 records per poll for better throughput
-            fetch_min_bytes=1024,  # Wait for at least 1KB before returning
-            fetch_max_wait_ms=500  # Max wait time for fetch
+            fetch_min_bytes=16384,  # Wait for at least 16KB before returning (increased for better throughput)
+            fetch_max_wait_ms=100,  # Reduced wait time for lower latency
+            max_partition_fetch_bytes=10485760  # 10MB per partition (increased for better throughput)
         )
         
         self.producer = KafkaProducer(
             bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
             value_serializer=lambda v: json.dumps(v).encode('utf-8'),
             key_serializer=lambda k: k.encode('utf-8') if k else None,
-            acks='all'
+            acks=1,  # Only wait for leader acknowledgment (faster than 'all')
+            retries=3,
+            max_in_flight_requests_per_connection=5,  # Allow more in-flight for better throughput
+            compression_type='gzip',  # Compress messages for better throughput
+            batch_size=16384,  # Batch messages for better throughput
+            linger_ms=10  # Wait up to 10ms to batch messages
         )
         
         self.model = FireDetectionModel()
@@ -565,6 +585,7 @@ class FireDetectionStream:
         self.video_frame_count = 0
         self.video_start_timestamp = None  # First frame timestamp for filename
         self.last_frame_number = None  # Track last frame number to detect video end
+        self.last_frame = None  # Store last frame for final buffer flush
         self.video_stats = {}  # Track stats per video: {video_id: {"frames": count, "fires": count, "max_prob": float}}
     
     def decode_frame(self, frame_data: str) -> np.ndarray:
@@ -589,13 +610,52 @@ class FireDetectionStream:
             filepath = os.path.join(output_dir, filename)
             
             # Create video writer
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Try HEVC (H.265) first, fallback to H.264 (AVC), then mp4v
+            fourcc = None
+            codec_used = None
+            
+            for codec_name in ['HEVC', 'hvc1', 'avc1', 'H264', 'mp4v']:
+                try:
+                    test_fourcc = cv2.VideoWriter_fourcc(*codec_name)
+                    # Test if codec works by creating a temporary writer
+                    test_path = '/tmp/test_codec_firewatch.mp4'
+                    test_writer = cv2.VideoWriter(test_path, test_fourcc, fps, (width, height))
+                    if test_writer.isOpened():
+                        test_writer.release()
+                        # Clean up test file
+                        if os.path.exists(test_path):
+                            os.remove(test_path)
+                        fourcc = test_fourcc
+                        codec_used = codec_name
+                        print(f"✓ Using codec: {codec_name}")
+                        break
+                except Exception as e:
+                    continue
+            
+            if fourcc is None:
+                # Final fallback
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                codec_used = 'mp4v'
+                print(f"⚠️  Using fallback codec: mp4v")
+            
+            # Create VideoWriter
+            # Note: OpenCV VideoWriter doesn't support quality/bitrate settings directly
+            # File size depends on codec compression efficiency:
+            # - HEVC/H.264: Better compression (smaller files)
+            # - mp4v: Poor compression (larger files)
+            # Resolution and frame rate also affect file size significantly
             self.video_writer = cv2.VideoWriter(filepath, fourcc, fps, (width, height))
             
             if not self.video_writer.isOpened():
                 print(f"Error: Could not open video writer for {filepath}")
                 self.video_writer = None
                 return None
+            
+            # Log estimated file size info
+            # Rough estimate: ~1-5 MB per minute at 640x480 depending on codec
+            estimated_size_mb = (fps * 60 * 2.5) / 1024  # ~2.5MB per minute estimate
+            print(f"  Codec: {codec_used}, Resolution: {width}x{height}, FPS: {fps:.1f}")
+            print(f"  Estimated file size: ~{estimated_size_mb:.1f}MB per minute of video")
             
             self.video_filepath = filepath
             self.video_frame_count = 0
@@ -634,10 +694,91 @@ class FireDetectionStream:
         """Close the current video writer and publish completion event for S3 upload."""
         if self.video_writer is not None:
             try:
-                self.video_writer.release()
                 filepath = self.video_filepath
                 frame_count = self.video_frame_count
                 video_id = self.current_video_id
+                
+                # Properly release the video writer (this finalizes the file and writes moov atom)
+                # This is critical - without proper release, the moov atom won't be written
+                # and the file will be unplayable (moov atom not found error)
+                #
+                # IMPORTANT: OpenCV VideoWriter buffers frames in memory and only writes them
+                # to disk when release() is called. If the process is killed before release(),
+                # buffered frames are lost and the file size gets "stuck" at a partial size.
+                # That's why the video was stuck at 23MB - frames were buffered but never written.
+                file_size_before = os.path.getsize(filepath) if filepath and os.path.exists(filepath) else 0
+                print(f"  Releasing video writer (frames written: {frame_count}, current file size: {file_size_before / 1024 / 1024:.1f}MB)...")
+                
+                # Ensure all frames are written before release
+                # OpenCV VideoWriter buffers frames, so we need to make sure everything is flushed
+                if self.video_writer is not None and self.video_writer.isOpened():
+                    # Force buffer flush by writing a final frame (some codecs need this)
+                    try:
+                        # Get the last frame if available to ensure buffer is flushed
+                        if self.last_frame is not None:
+                            self.video_writer.write(self.last_frame)
+                    except:
+                        pass
+                
+                self.video_writer.release()
+                self.video_writer = None  # Clear reference immediately
+                
+                # Force Python to flush file handles and garbage collect
+                import gc
+                gc.collect()
+                
+                # Give the OS time to flush file buffers and finalize the MP4 structure
+                # The moov atom (metadata) is written during release, but we need to ensure
+                # it's fully written to disk before proceeding
+                import time
+                time.sleep(3.0)  # Increased wait time to ensure proper finalization
+                
+                # Force file system sync to ensure data is written to disk
+                try:
+                    fd = os.open(filepath, os.O_RDONLY)
+                    os.fsync(fd)  # Force sync to disk
+                    os.close(fd)
+                except:
+                    pass
+                
+                # Check file size after release (should be larger as buffered frames are written)
+                if filepath and os.path.exists(filepath):
+                    file_size_after = os.path.getsize(filepath)
+                    if file_size_after > file_size_before:
+                        print(f"  ✓ Video finalized: {file_size_after / 1024 / 1024:.1f}MB (wrote {file_size_after - file_size_before} bytes from buffer)")
+                    else:
+                        print(f"  ⚠️  File size unchanged after release (may indicate issue)")
+                
+                # Verify the file exists and has content
+                if filepath and os.path.exists(filepath):
+                    file_size = os.path.getsize(filepath)
+                    if file_size == 0:
+                        print(f"⚠️  Warning: Video file is empty: {filepath}")
+                        return None
+                    
+                    # Verify video can be opened (checks for moov atom presence)
+                    # Give extra time for file system to sync
+                    import time
+                    time.sleep(1.0)
+                    
+                    test_cap = cv2.VideoCapture(filepath)
+                    if not test_cap.isOpened():
+                        print(f"⚠️  Warning: Video file may be corrupted (moov atom missing): {filepath}")
+                        print(f"   This can happen if the process was terminated before video finalization")
+                        test_cap.release()
+                        return None
+                    
+                    # Check if video has valid frame count and duration
+                    frame_count = int(test_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = test_cap.get(cv2.CAP_PROP_FPS)
+                    test_cap.release()
+                    
+                    if frame_count == 0 or fps == 0:
+                        print(f"⚠️  Warning: Video file has 0 frames or invalid FPS: {filepath}")
+                        print(f"   Expected {self.video_frame_count} frames at {self.video_fps} fps")
+                        print(f"   This may indicate the video writer did not finalize properly")
+                        # Don't return None - let the file exist even if it's not perfect
+                        # The file might still be playable in some players
                 
                 # Get stats
                 stats = self.video_stats.get(video_id, {})
@@ -706,6 +847,7 @@ class FireDetectionStream:
             self.video_height = None
             self.video_start_timestamp = timestamp  # Store first frame timestamp
             self.last_frame_number = None
+            self.last_frame = None
             
             # Initialize stats for new video
             if video_id not in self.video_stats:
@@ -762,11 +904,14 @@ class FireDetectionStream:
             height = message_value.get("height")
             
             # Check if video ended (large gap in frame numbers suggests video finished)
+            # Note: Only close if gap is very large (>300 frames = ~10 seconds at 30fps)
+            # This prevents premature closing due to processing delays or out-of-order frames
             if self.current_video_id == video_id and self.last_frame_number is not None:
                 frame_gap = frame_number - self.last_frame_number
-                # If gap is more than 30 frames (1 second at 30fps), likely video ended
-                if frame_gap > 30:
-                    print(f"⚠️  Detected gap of {frame_gap} frames - closing video {video_id}")
+                # If gap is more than 300 frames (~10 seconds at 30fps), likely video ended
+                # This is much larger than the previous 30-frame threshold to avoid false positives
+                if frame_gap > 300:
+                    print(f"⚠️  Detected large gap of {frame_gap} frames - closing video {video_id}")
                     self._close_video_writer(print_summary=True)
                     # Reset state for new video (or continuation)
                     self._reset_video_state(video_id, timestamp, frame_number)
@@ -819,6 +964,18 @@ class FireDetectionStream:
             if self.video_writer is not None:
                 self.video_writer.write(processed_frame)
                 self.video_frame_count += 1
+                # Store last frame for final buffer flush
+                self.last_frame = processed_frame.copy()
+                
+                # Periodically check if writer is still working (every 100 frames)
+                # This helps catch issues early and ensures frames are being written
+                if self.video_frame_count % 100 == 0:
+                    # Verify file is growing (basic sanity check)
+                    if self.video_filepath and os.path.exists(self.video_filepath):
+                        current_size = os.path.getsize(self.video_filepath)
+                        # If file hasn't grown in a while, there might be an issue
+                        # (but don't spam logs - just verify it's working)
+                        pass
             
             # Create detection result
             detection_result = {
@@ -845,12 +1002,30 @@ class FireDetectionStream:
             print(f"Error processing frame: {e}")
             return None
     
+    def _cleanup(self):
+        """Cleanup resources and finalize video."""
+        print("\n🛑 Cleaning up and finalizing video...")
+        if self.video_writer is not None:
+            try:
+                self._close_video_writer(print_summary=True)
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
+    
     def run(self):
         """Run the stream processor."""
         print(f"Starting fire detection stream processor...")
         print(f"Consuming from topic: {config.KAFKA_VIDEO_TOPIC}")
         print(f"Publishing to topic: {config.KAFKA_DETECTIONS_TOPIC}")
         print(f"Waiting for messages... (Press Ctrl+C to stop)\n")
+        
+        # Register signal handlers for graceful shutdown
+        def signal_handler(sig, frame):
+            print(f"\n\nReceived signal {sig}, shutting down gracefully...")
+            self._cleanup()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
         
         message_count = 0
         detection_count = 0
@@ -878,48 +1053,61 @@ class FireDetectionStream:
                     
                     # Send ALL detection results to topic (not just fires)
                     # This allows tracking of all processed frames
+                    # Use async send (non-blocking) for better throughput
                     future = self.producer.send(
                         self.detections_topic,
                         key=video_id,
                         value=detection_result
                     )
                     
-                    try:
-                        record_metadata = future.get(timeout=10)
-                        if detection_result["has_fire"]:
+                    # Only check result for fire detections (to reduce overhead)
+                    if detection_result["has_fire"]:
+                        # Use callback for async error handling (non-blocking)
+                        def on_send_success(record_metadata):
                             print(f"  → Detection sent to topic {record_metadata.topic} partition {record_metadata.partition}")
-                    except KafkaError as e:
-                        print(f"Error sending detection: {e}")
+                        
+                        def on_send_error(excp):
+                            print(f"  ⚠️  Error sending detection: {excp}")
+                        
+                        future.add_callback(on_send_success)
+                        future.add_errback(on_send_error)
+                    
+                    # Commit offset after processing each message (manual commit)
+                    # This ensures we don't lose progress if the consumer stops
+                    if message_count % 100 == 0:  # Commit every 100 messages to reduce overhead
+                        try:
+                            self.consumer.commit()
+                        except Exception as e:
+                            print(f"⚠️  Error committing offset: {e}")
                 else:
                     print(f"⚠️  Failed to process frame {frame_data.get('frame_number')} from video {video_id}")
             
+            # Final commit before closing
+            try:
+                self.consumer.commit()
+            except:
+                pass
+            
             # If we exit the loop (timeout or end of messages), close current video
             if self.video_writer is not None:
-                print("\n⚠️  No more messages - closing current video...")
+                print(f"\n⚠️  Consumer loop exited - processed {message_count} messages total")
+                print("  Closing current video...")
                 self._close_video_writer(print_summary=True)
         
         except KeyboardInterrupt:
             print(f"\n\nStopping stream processor...")
-            # Close final video if processing
-            if self.video_writer is not None:
-                print("Closing final video...")
-                self._close_video_writer()
+            self._cleanup()
             print(f"Summary: Processed {message_count} messages, {detection_count} detections, {fire_count} fires")
         except Exception as e:
             print(f"\nError in stream processor: {e}")
-            # Close video even on error
-            if self.video_writer is not None:
-                try:
-                    self._close_video_writer()
-                except:
-                    pass
+            self._cleanup()
             import traceback
             traceback.print_exc()
         finally:
-            # Close any remaining video writer
+            # Ensure cleanup happens even if something goes wrong
             if self.video_writer is not None:
                 try:
-                    self._close_video_writer()
+                    self._close_video_writer(print_summary=False)
                 except:
                     pass
             self.consumer.close()

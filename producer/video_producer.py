@@ -108,9 +108,14 @@ class VideoProducer:
             
             print(f"Finished processing {frame_count} frames")
             
+            # Wait for all async sends to complete before closing
+            # This ensures all frames are actually sent to Kafka
+            print("Flushing producer to ensure all messages are sent...")
+            self.producer.flush(timeout=60)  # Wait up to 60 seconds for all messages
+            print("✓ All messages flushed to Kafka")
+            
         finally:
             cap.release()
-            self.producer.flush()
     
     def close(self):
         """Close the producer."""
