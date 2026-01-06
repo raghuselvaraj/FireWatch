@@ -16,23 +16,50 @@
 
 ## Quick Start
 
+### Automated Deployment (Recommended)
+
+Use the deployment script that runs tests before deploying:
+
+```bash
+cd infrastructure
+./scripts/deploy.sh
+```
+
+**Options:**
+- `--skip-tests`: Skip running unit tests (not recommended)
+- `--skip-build`: Skip building/pushing Docker images
+- `--skip-bootstrap`: Skip CDK bootstrap check
+
+### Manual Deployment
+
 1. **Install dependencies:**
    ```bash
    cd infrastructure
    npm install
    ```
 
-2. **Bootstrap CDK** (first time only):
+2. **Run tests:**
+   ```bash
+   # Python tests
+   cd ..
+   pytest tests/ -v
+   
+   # CDK tests (if any)
+   cd infrastructure
+   npm test
+   ```
+
+3. **Bootstrap CDK** (first time only):
    ```bash
    cdk bootstrap
    ```
 
-3. **Build and push Docker images:**
+4. **Build and push Docker images:**
    ```bash
    ./scripts/build-and-push.sh
    ```
 
-4. **Deploy infrastructure:**
+5. **Deploy infrastructure:**
    ```bash
    cdk deploy
    ```

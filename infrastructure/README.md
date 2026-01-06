@@ -66,6 +66,40 @@ The infrastructure deploys:
    npm run build
    ```
 
+## Testing
+
+Run unit tests to verify infrastructure components:
+
+```bash
+npm test
+```
+
+Run tests in watch mode:
+```bash
+npm test -- --watch
+```
+
+Run a specific test file:
+```bash
+npm test -- firewatch-stack.test.ts
+```
+
+Run tests with coverage:
+```bash
+npm test -- --coverage
+```
+
+**Test Coverage:**
+- FireWatchStack: VPC, MSK, S3, ECS configuration
+- MSKServerlessCluster: IAM auth, security groups, VPC integration
+- S3Bucket: Encryption, versioning, lifecycle rules
+- ECSCluster: Cluster, services, auto-scaling
+- FireDetectionService: Task definition, container config, scaling
+- S3UploadService: Task definition, container config
+- VideoProducerService: Task definition, one-off task design
+
+Tests are automatically run by `scripts/deploy.sh` before deployment.
+
 ## Deployment
 
 ### Deploy Everything
