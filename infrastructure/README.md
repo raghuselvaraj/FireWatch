@@ -195,7 +195,7 @@ Adjust scaling policies in the service construct files.
 - **MSK Serverless**: ~$95-190/month (low to medium usage)
 
 **To minimize costs:**
-- ✅ MSK Serverless eliminates ~$450/month idle cost (vs provisioned MSK)
+- ✅ MSK Serverless eliminates idle costs - pay only for data
 - Scale ECS tasks to 0 when not processing (saves ~$45-75/month)
 - Delete stack when not in use (saves all costs)
 - See [docs/COST_OPTIMIZATION.md](docs/COST_OPTIMIZATION.md) for detailed cost breakdown

@@ -8,9 +8,9 @@ MSK Serverless is a pay-as-you-go Kafka service that eliminates idle costs. Inst
 - **Data ingested**: ~$0.10/GB
 - **Data stored**: ~$0.10/GB/month (for retention)
 
-**Cost when idle: ~$0** (vs ~$450/month for provisioned MSK)
+**Cost when idle: ~$0**
 
-**Note**: MSK Serverless is the only MSK option available in this CDK stack. It eliminates idle costs compared to provisioned MSK.
+**Note**: MSK Serverless is the only MSK option available in this CDK stack. It eliminates idle costs and automatically scales to match your workload.
 
 ## Configuration
 
@@ -69,9 +69,9 @@ consumer = KafkaConsumer(
 )
 ```
 
-## Migration from Provisioned MSK (External)
+## Migration from External MSK Clusters
 
-If you're migrating from a provisioned MSK cluster outside this CDK stack:
+If you're migrating from an external MSK cluster (outside this CDK stack):
 
 1. **Update Kafka client code** to use IAM authentication (see Authentication section above)
 
@@ -88,7 +88,7 @@ If you're migrating from a provisioned MSK cluster outside this CDK stack:
 
 ## Limitations
 
-- **Throughput**: Max 200 MB/s per cluster (vs unlimited for provisioned)
+- **Throughput**: Max 200 MB/s per cluster
 - **Partitions**: Max 2,000 partitions per cluster
 - **Retention**: Configurable, but affects storage costs
 - **Authentication**: IAM only (no TLS/SASL)
@@ -122,5 +122,5 @@ aws cloudwatch put-metric-alarm \
 
 ## Summary
 
-**MSK Serverless eliminates idle costs** - perfect for variable workloads and cost-conscious deployments. The default configuration uses MSK Serverless to minimize costs when idle.
+**MSK Serverless eliminates idle costs** - perfect for variable workloads and cost-conscious deployments. The CDK stack uses MSK Serverless exclusively to minimize costs when idle.
 

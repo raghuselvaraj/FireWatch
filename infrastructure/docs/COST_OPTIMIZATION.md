@@ -16,149 +16,40 @@ This document outlines cost optimization strategies, pay-as-you-go services, and
 - **MSK Serverless**: ~$39/month (NAT + VPC Endpoint only)
 
 **To minimize idle costs:**
-- ✅ MSK Serverless eliminates ~$450/month idle cost (vs provisioned MSK)
+- ✅ MSK Serverless eliminates idle costs - pay only for data
 - ✅ Use VPC endpoints for all AWS services (S3, DynamoDB, etc.)
 - ✅ Scale ECS tasks to 0 when not processing (saves ~$45-75/month)
 - ✅ Delete stack when not in use (saves all costs)
 
 ## MSK Serverless Overview
 
-**Note**: This CDK stack uses MSK Serverless exclusively. The following section provides context on why Serverless was chosen over Provisioned MSK.
+**Note**: This CDK stack uses MSK Serverless exclusively. MSK Serverless is a pay-as-you-go Kafka service that eliminates idle costs and automatically scales to match your workload.
 
-### Quick Comparison
+### Key Features
 
-| Factor | MSK Serverless | MSK Provisioned |
-|--------|----------------|-----------------|
-| **Idle Cost** | ~$0/month | ~$450/month (3 brokers) |
-| **Active Cost** | ~$0.10/GB ingested + $0.10/GB/month stored | ~$450/month (fixed) |
-| **Max Throughput** | 200 MB/s per cluster | Unlimited (scales with brokers) |
-| **Max Partitions** | 2,000 per cluster | Unlimited |
-| **Authentication** | IAM only | TLS, SASL, IAM |
-| **Configuration Control** | Limited | Full control |
-| **Scaling** | Automatic | Manual (add/remove brokers) |
-| **Best For** | Variable workloads, cost-conscious | High throughput, predictable workloads |
+- **Idle Cost**: ~$0/month (no data = no cost)
+- **Active Cost**: ~$0.10/GB ingested + $0.10/GB/month stored
+- **Max Throughput**: 200 MB/s per cluster
+- **Max Partitions**: 2,000 per cluster
+- **Authentication**: IAM only (integrated with AWS)
+- **Scaling**: Automatic (no manual intervention)
+- **Configuration**: AWS-managed (no broker management needed)
 
-### Detailed Trade-Offs
+### Cost Examples
 
-#### 💰 Cost Analysis
-
-**MSK Serverless (Pay-as-You-Go)**
 - **Idle**: ~$0/month (no data = no cost)
 - **Low usage** (10GB ingested, 50GB stored): ~$5-10/month
 - **Medium usage** (100GB ingested, 500GB stored): ~$60/month
 - **High usage** (1TB ingested, 2TB stored): ~$210/month
 
-**MSK Provisioned (Fixed Cost)**
-- **Idle**: ~$450/month (3 brokers, m5.large)
-- **Any usage**: ~$450/month (cost doesn't change with data volume)
-- **With Reserved Capacity** (1-year): ~$315/month (30% savings)
-
-**Break-Even Point**: 
-- MSK Serverless is cheaper until you process **~4.5TB/month**
-- At very high throughput (>200 MB/s), Provisioned may be required
-- For 24/7 high-volume workloads, Reserved Capacity can make Provisioned cheaper
-
-#### ⚡ Performance & Scalability
-
-**MSK Serverless**
-- ✅ Automatic scaling (no manual intervention)
-- ✅ No capacity planning needed
-- ⚠️ Max 200 MB/s per cluster (may be limiting for very high throughput)
-- ⚠️ Max 2,000 partitions per cluster
-- ✅ Instant scaling up/down
-
-**MSK Provisioned**
-- ✅ Unlimited throughput (scales with broker count and instance size)
-- ✅ Unlimited partitions
-- ⚠️ Manual scaling (add/remove brokers, may take 10-20 minutes)
-- ⚠️ Requires capacity planning
-- ✅ Predictable performance
-
-#### 🔧 Configuration & Control
-
-**MSK Serverless**
-- ⚠️ Limited configuration options (AWS manages everything)
-- ✅ No broker management
-- ✅ Automatic updates and patching
-- ⚠️ Cannot customize broker settings
-
-**MSK Provisioned**
-- ✅ Full control over broker configuration
-- ✅ Custom Kafka configurations
-- ✅ Choose instance types and storage
-- ⚠️ Manual updates and patching
-- ⚠️ More operational overhead
-
-#### 🔐 Security & Authentication
-
-**MSK Serverless**
-- ✅ IAM authentication (integrated with AWS)
-- ⚠️ IAM only (no TLS/SASL options)
-- ✅ Automatic encryption in transit
-- ✅ Automatic encryption at rest
-
-**MSK Provisioned**
-- ✅ IAM, TLS, SASL/SCRAM authentication options
-- ✅ More authentication flexibility
-- ✅ Custom encryption keys (KMS)
-- ✅ Network-level security controls
-
-#### 📊 When to Use Each
-
-**✅ Use MSK Serverless When:**
-- Variable or unpredictable workloads
-- Cost-conscious deployments (want to minimize idle costs)
-- Development/testing environments
-- Low to medium throughput (< 200 MB/s)
-- Want automatic scaling
-- Don't need fine-grained broker control
-- **Default choice for most use cases**
-
-**✅ Use MSK Provisioned When:**
-- High throughput requirements (> 200 MB/s)
-- Predictable, consistent 24/7 workloads
-- Need more than 2,000 partitions
-- Need fine-grained control over broker configuration
-- Need TLS/SASL authentication (not just IAM)
-- Running 24/7 with high utilization (may be cheaper with Reserved Capacity)
-- **Specialized high-performance use cases**
-
-### Cost Scenarios
-
-#### Scenario 1: Development/Testing (Variable Usage)
-- **Usage**: 0-50GB/month, sporadic
-- **MSK Serverless**: ~$0-5/month
-- **MSK Provisioned**: ~$450/month
-- **Winner**: MSK Serverless (saves ~$445-450/month)
-
-#### Scenario 2: Production (Low-Medium Usage)
-- **Usage**: 100GB ingested, 500GB stored/month
-- **MSK Serverless**: ~$60/month
-- **MSK Provisioned**: ~$450/month
-- **Winner**: MSK Serverless (saves ~$390/month)
-
-#### Scenario 3: Production (High Usage)
-- **Usage**: 1TB ingested, 2TB stored/month
-- **MSK Serverless**: ~$210/month
-- **MSK Provisioned**: ~$450/month
-- **Winner**: MSK Serverless (saves ~$240/month)
-
-#### Scenario 4: Production (Very High Usage, 24/7)
-- **Usage**: 5TB+ ingested/month, 24/7 operation
-- **MSK Serverless**: ~$500+/month (may hit throughput limits)
-- **MSK Provisioned**: ~$450/month (or ~$315/month with Reserved Capacity)
-- **Winner**: MSK Provisioned (better performance + cost at scale)
-
 ### Why This Stack Uses MSK Serverless
 
 This CDK stack uses MSK Serverless exclusively because:
-- **Eliminates idle costs**: ~$450/month savings when not processing
+- **Eliminates idle costs**: Pay only when processing data
 - **Automatic scaling**: Matches variable video processing workloads
 - **Sufficient throughput**: 200 MB/s is adequate for most video processing scenarios
 - **Simplified operations**: No broker management or capacity planning needed
 - **IAM integration**: Seamless authentication with ECS task roles
-
-**Note**: If you need provisioned MSK (for throughput > 200 MB/s or > 2,000 partitions), you would need to modify the CDK stack or use a separate provisioned MSK cluster.
 
 ## Pay-as-You-Go Services
 
@@ -242,16 +133,15 @@ All services in FireWatch are configured to use pay-as-you-go pricing:
 | NAT Gateway (1x) | ~$32 | Reduced from 2 |
 | VPC Endpoint (S3) | ~$7 | Reduces NAT gateway costs |
 | CloudWatch Logs | ~$5-10 | Pay per GB |
-| **Total (Active)** | **~$90-190/month** | vs ~$540-580/month with Provisioned MSK |
-| **Total (Idle)** | **~$39/month** | vs ~$489/month with Provisioned MSK |
+| **Total (Active)** | **~$90-190/month** | |
+| **Total (Idle)** | **~$39/month** | Fixed costs only |
 
 ### Cost Savings
 
-- **MSK Serverless**: ~$450/month savings when idle
+- **MSK Serverless**: Eliminates idle costs - pay only for data
 - **NAT Gateway**: ~$33/month (1 vs 2)
 - **Fargate Spot**: ~$75-105/month (70% discount)
 - **VPC Endpoint**: Saves ~$10-20/month in NAT gateway data transfer
-- **Total Savings**: ~$568-608/month vs unoptimized Provisioned MSK setup
 
 ## Configuration Options
 
@@ -281,7 +171,7 @@ new FireWatchStack(app, 'FireWatchStack', {
 
 ## Cost Optimization at Scale
 
-When running at scale (24/7, predictable workloads), consider provisioned resources for additional savings:
+When running at scale (24/7, predictable workloads), consider these optimization strategies:
 
 ### AWS Savings Plans
 
@@ -342,10 +232,10 @@ When running at scale (24/7, predictable workloads), consider provisioned resour
 | **Development/Testing** | MSK Serverless, scale to 0 | ~$39 (idle) | Minimum fixed costs |
 | **Low Volume** | MSK Serverless, auto-scaling | ~$90-190 | Current optimized setup |
 | **Medium Volume (24/7)** | MSK Serverless + S3 Intelligent-Tiering | ~$100-200 | Add S3 optimization |
-| **High Volume (24/7, 1+ year)** | MSK Provisioned + Reserved Capacity | ~$400-500 | Requires commitment |
-| **Very High Volume** | MSK Provisioned + Reserved + S3 Glacier | ~$350-450 | Maximum savings |
+| **High Volume (24/7, 1+ year)** | MSK Serverless + S3 Intelligent-Tiering + Savings Plans | ~$200-300 | Optimized for scale |
+| **Very High Volume** | MSK Serverless + S3 Glacier + Savings Plans | ~$250-350 | Maximum savings |
 
-### When to Use Provisioned Resources
+### When to Use Reserved Capacity/Savings Plans
 
 **✅ Use Reserved Capacity/Savings Plans When:**
 - Running 24/7 for 1+ years
@@ -359,7 +249,7 @@ When running at scale (24/7, predictable workloads), consider provisioned resour
 - Testing or development
 - Uncertain about future usage
 
-**Note**: MSK Serverless is already optimized for cost and doesn't require reserved capacity.
+**Note**: MSK Serverless is already optimized for cost - it's pay-as-you-go and doesn't require reserved capacity.
 
 ### Cost Optimization Checklist
 
@@ -416,13 +306,11 @@ aws cloudwatch put-metric-alarm \
 
 ## Cost Comparison Summary
 
-### MSK Serverless vs Provisioned
+### Monthly Cost Breakdown
 
 | Configuration | Idle Cost | Active Cost (Low) | Active Cost (High) |
 |--------------|-----------|-------------------|-------------------|
-| MSK Serverless (default) | ~$39/month | ~$90-190/month | ~$200-300/month |
-| MSK Provisioned | ~$489/month | ~$540-580/month | ~$540-580/month |
-| **Savings with Serverless** | **~$450/month** | **~$350-390/month** | **~$240-280/month** |
+| MSK Serverless | ~$39/month | ~$90-190/month | ~$200-300/month |
 
 ### Development vs Production
 
@@ -440,4 +328,4 @@ For cost optimization questions:
 - Use AWS Cost Anomaly Detection for unexpected charges
 - Consider AWS Cost Explorer's "Reserved Instance Recommendations"
 
-**Recommendation**: This CDK stack uses MSK Serverless exclusively, which is optimal for most use cases. MSK Serverless eliminates idle costs and automatically scales to match your workload. If you need throughput > 200 MB/s or > 2,000 partitions, you would need to use a separate provisioned MSK cluster (not included in this stack).
+**Recommendation**: This CDK stack uses MSK Serverless exclusively, which is optimal for most use cases. MSK Serverless eliminates idle costs and automatically scales to match your workload. For throughput > 200 MB/s or > 2,000 partitions, consider splitting workloads across multiple MSK Serverless clusters or using a different messaging solution.

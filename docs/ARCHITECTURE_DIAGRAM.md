@@ -15,22 +15,22 @@ flowchart TB
         V3[Uploaded Videos]
     end
 
-    subgraph Kafka["☁️ Kafka Cluster (MSK Serverless/Provisioned)"]
+    subgraph Kafka["☁️ Kafka Cluster (MSK Serverless)"]
         direction TB
-        K1["📨 video-frames<br/>6 Partitions"]
-        K2["🔥 fire-detections<br/>6 Partitions"]
-        K3["✅ video-completions<br/>3 Partitions"]
+        K1["📨 video-frames: 6 Partitions"]
+        K2["🔥 fire-detections: 6 Partitions"]
+        K3["✅ video-completions: 3 Partitions"]
     end
 
     subgraph Processing["⚙️ Processing Layer"]
         direction TB
-        P["🎬 Video Producer<br/>Extracts Frames"]
-        S["🤖 Fire Detection Stream<br/>ML Inference + Heatmap Overlay"]
-        C["📤 S3 Upload Consumer<br/>Uploads Annotated Videos"]
+        P["🎬 Video Producer: Extracts Frames"]
+        S["🤖 Fire Detection Stream: ML Inference + Heatmap Overlay"]
+        C["📤 S3 Upload Consumer: Uploads Annotated Videos"]
     end
 
     subgraph Storage["💾 Storage"]
-        S3[("🪣 S3 Bucket<br/>Annotated Videos")]
+        S3[("🪣 S3 Bucket: Annotated Videos")]
     end
 
     %% Video Sources to Producer
@@ -39,20 +39,20 @@ flowchart TB
     V3 --> P
 
     %% Producer to Kafka
-    P -->|"Frames<br/>(Base64)"| K1
+    P -->|"Frames (Base64)"| K1
 
     %% Kafka to Stream Processor
     K1 -->|"Frames"| S
 
     %% Stream Processor to Kafka
-    S -->|"Detections<br/>(JSON)"| K2
+    S -->|"Detections (JSON)"| K2
     S -->|"Completion Events"| K3
 
     %% Kafka to Consumer
     K3 -->|"Events"| C
 
     %% Consumer to Storage
-    C -->|"Annotated Videos<br/>(MP4)"| S3
+    C -->|"Annotated Videos (MP4)"| S3
 
     %% Styling
     classDef kafkaTopic fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
@@ -73,7 +73,7 @@ flowchart LR
     subgraph Producer["🎬 Video Producer"]
         direction TB
         VP[Video Producer]
-        FE[Frame Extractor<br/>OpenCV]
+        FE["Frame Extractor: OpenCV"]
         EN[Base64 Encoder]
         VP --> FE
         FE --> EN
@@ -82,9 +82,9 @@ flowchart LR
     subgraph Stream["🤖 Fire Detection Stream"]
         direction TB
         FD[Fire Detection Stream]
-        ML["🧠 ML Model<br/>fire-detect-nn<br/>DenseNet121"]
-        HM["🔥 GradCAM Heatmap<br/>Visual Fire Regions"]
-        VO[Video Overlay<br/>Heatmap + Original]
+        ML["🧠 ML Model: fire-detect-nn, DenseNet121"]
+        HM["🔥 GradCAM Heatmap: Visual Fire Regions"]
+        VO["Video Overlay: Heatmap + Original"]
         FD --> ML
         ML --> HM
         HM --> VO
@@ -93,7 +93,7 @@ flowchart LR
     subgraph Consumer["📤 S3 Upload Consumer"]
         direction TB
         S3C[S3 Upload Consumer]
-        UP[S3 Uploader<br/>Boto3]
+        UP["S3 Uploader: Boto3"]
         S3C --> UP
     end
 
@@ -101,9 +101,9 @@ flowchart LR
         S3[("🪣 S3 Bucket")]
     end
 
-    EN -->|"Frames<br/>(Base64)"| FD
-    VO -->|"Completion Events<br/>(JSON)"| S3C
-    UP -->|"Annotated Videos<br/>(MP4)"| S3
+    EN -->|"Frames (Base64)"| FD
+    VO -->|"Completion Events (JSON)"| S3C
+    UP -->|"Annotated Videos (MP4)"| S3
 
     %% Styling
     classDef mlModel fill:#ffebee,stroke:#c62828,stroke-width:3px,color:#000
@@ -123,28 +123,28 @@ flowchart LR
 graph TB
     subgraph "AWS VPC"
         subgraph "Public Subnets"
-            NAT[NAT Gateway<br/>1x (Default)<br/>Configurable]
+            NAT["NAT Gateway: 1x Default, Configurable"]
         end
 
         subgraph "Private Subnets"
             subgraph "ECS Cluster"
-                FDS[Fire Detection Stream<br/>2-10 Tasks<br/>4GB/2CPU]
-                S3U[S3 Upload Consumer<br/>1-5 Tasks<br/>2GB/1CPU]
+                FDS["Fire Detection Stream: 2-10 Tasks, 4GB/2CPU"]
+                S3U["S3 Upload Consumer: 1-5 Tasks, 2GB/1CPU"]
             end
         end
 
         subgraph "Isolated Subnets"
-            MSK["MSK Cluster<br/>Serverless (Default)<br/>or Provisioned<br/>3 Brokers"]
+            MSK["MSK Cluster: Serverless, Auto-scaling"]
         end
     end
 
     subgraph "Storage"
-        S3[(S3 Bucket<br/>Encrypted KMS<br/>Lifecycle Policies)]
-        ECR[ECR Repositories<br/>3x Services]
+        S3[("S3 Bucket: Encrypted KMS, Lifecycle Policies")]
+        ECR["ECR Repositories: 3x Services"]
     end
 
     subgraph "Monitoring"
-        CW[CloudWatch Logs<br/>Container Insights]
+        CW["CloudWatch Logs: Container Insights"]
     end
 
     FDS -->|Consume| MSK
@@ -216,9 +216,9 @@ graph TB
         end
 
         subgraph "Stream Processors"
-            SP1[Consumer 1<br/>Partitions 0,1]
-            SP2[Consumer 2<br/>Partitions 2,3]
-            SP3[Consumer 3<br/>Partitions 4,5]
+            SP1["Consumer 1: Partitions 0,1"]
+            SP2["Consumer 2: Partitions 2,3"]
+            SP3["Consumer 3: Partitions 4,5"]
         end
 
         subgraph "S3 Upload Consumers"
@@ -252,28 +252,28 @@ graph TB
 ```mermaid
 graph LR
     subgraph "Message Queue"
-        K[Apache Kafka<br/>MSK on AWS]
+        K["Apache Kafka: MSK on AWS"]
     end
 
     subgraph "ML Framework"
         P[PyTorch]
-        F[fire-detect-nn<br/>DenseNet121]
+        F["fire-detect-nn: DenseNet121"]
         G[GradCAM]
         P --> F
         F --> G
     end
 
     subgraph "Container Platform"
-        E[ECS Fargate<br/>Auto-scaling]
+        E["ECS Fargate: Auto-scaling"]
     end
 
     subgraph "Storage"
-        S[S3<br/>KMS Encrypted]
+        S["S3: KMS Encrypted"]
     end
 
     subgraph "Infrastructure"
-        CDK[AWS CDK<br/>TypeScript]
-        VPC[VPC<br/>Multi-AZ]
+        CDK["AWS CDK: TypeScript"]
+        VPC["VPC: Multi-AZ"]
     end
 
     K --> E
@@ -341,19 +341,19 @@ graph LR
 ```mermaid
 graph TB
     subgraph "Network Security"
-        SG1[Security Group<br/>MSK]
-        SG2[Security Group<br/>ECS]
-        VPC[VPC<br/>Isolated Subnets]
+        SG1["Security Group: MSK"]
+        SG2["Security Group: ECS"]
+        VPC["VPC: Isolated Subnets"]
     end
 
     subgraph "Data Security"
-        KMS[KMS Key<br/>S3 Encryption]
-        TLS[TLS<br/>Kafka Encryption]
+        KMS["KMS Key: S3 Encryption"]
+        TLS["TLS: Kafka Encryption"]
     end
 
     subgraph "Access Control"
-        IAM1[IAM Role<br/>ECS Tasks]
-        IAM2[IAM Policy<br/>S3 Access]
+        IAM1["IAM Role: ECS Tasks"]
+        IAM2["IAM Policy: S3 Access"]
     end
 
     VPC --> SG1
@@ -428,37 +428,32 @@ graph LR
 
 | Component | Monthly Cost (us-east-1) | Pay-as-You-Go? |
 |-----------|-------------------------|-----------------|
-| **MSK Serverless (Default)** | ~$0-60 | ✅ Pay per GB (varies with usage) |
-| **MSK Provisioned** | ~$450 | ⚠️ Charges when idle |
+| **MSK Serverless** | ~$0-60 | ✅ Pay per GB (varies with usage) |
 | ECS Fargate (2 tasks, Spot) | ~$45-75 | ✅ Can scale to 0 |
 | S3 Storage (100GB) | ~$2.30 | ✅ Pay per GB |
 | S3 Requests | ~$1 | ✅ Pay per request |
 | NAT Gateway (1x) | ~$32 | ⚠️ Charges when idle |
 | VPC Endpoint (S3) | ~$7 | ⚠️ Charges when idle |
 | CloudWatch | ~$5-10 | ✅ Pay per GB |
-| **Total (Active, Serverless)** | **~$90-190/month** | |
-| **Total (Idle, Serverless)** | **~$39/month** | Fixed costs only |
-| **Total (Active, Provisioned)** | **~$540-580/month** | |
-| **Total (Idle, Provisioned)** | **~$489/month** | Fixed costs only |
+| **Total (Active)** | **~$90-190/month** | |
+| **Total (Idle)** | **~$39/month** | Fixed costs only |
 
 ### ⚠️ Important Cost Notes
 
-- **MSK Serverless (Default)**: Pay only for data ingested/stored - ~$0 when idle
-- **MSK Provisioned**: Cannot scale to 0 (Kafka requires running brokers) - ~$450/month minimum
+- **MSK Serverless**: Pay only for data ingested/stored - ~$0 when idle
 - **NAT Gateway**: Charges per hour even when idle - ~$32/month minimum
 - **ECS Fargate**: Can scale to 0 tasks - $0 when idle
 - **S3**: Pay only for storage and requests - $0 when empty
 
 **To minimize idle costs:**
-- ✅ Use MSK Serverless (default) - eliminates ~$450/month idle cost
+- ✅ MSK Serverless eliminates idle costs - pay only for data
 - Scale ECS tasks to 0 when not processing
 - Use VPC endpoints to reduce NAT gateway usage
 - Consider deleting stack when not in use
 
 **At Scale (24/7, 1+ year):**
 - AWS Savings Plans: Up to 66% savings on compute
-- MSK Provisioned Reserved Capacity: Up to 30% savings (only if using Provisioned)
-- See [infrastructure/docs/COST_OPTIMIZATION.md](../infrastructure/docs/COST_OPTIMIZATION.md) for detailed MSK trade-offs
+- See [infrastructure/docs/COST_OPTIMIZATION.md](../infrastructure/docs/COST_OPTIMIZATION.md) for detailed cost optimization strategies
 
 ## Key Design Decisions
 
@@ -477,5 +472,5 @@ graph LR
 - [ ] Multi-region deployment
 - [ ] GPU support for faster ML inference
 - [ ] Video streaming API (API Gateway + Lambda)
-- [ ] Analytics pipeline (Kinesis → Redshift)
+- [ ] Analytics pipeline (Kafka → Snowflake via Snowpipe Streaming)
 

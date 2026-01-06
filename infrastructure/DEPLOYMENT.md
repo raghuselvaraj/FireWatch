@@ -9,7 +9,7 @@
 - MSK Serverless itself: ~$0/month when idle (pay only for data)
 
 **To minimize costs:**
-- ✅ MSK Serverless eliminates ~$450/month idle cost (vs provisioned MSK)
+- ✅ MSK Serverless eliminates idle costs - pay only for data
 - Scale ECS tasks to 0 when not processing
 - Delete stack when not in use
 - See [docs/COST_OPTIMIZATION.md](docs/COST_OPTIMIZATION.md) for detailed cost breakdown
@@ -239,7 +239,7 @@ Adjust in `lib/services/*-service.ts` files.
 
 The infrastructure is optimized for pay-as-you-go services:
 
-1. **MSK Serverless** - Eliminates ~$450/month idle cost (vs provisioned MSK)
+1. **MSK Serverless** - Eliminates idle costs - pay only for data
 2. **VPC Endpoint for S3** - Enabled by default, reduces NAT gateway costs
 3. **Fargate Spot** - Up to 70% discount on compute (enabled by default)
 4. **Single NAT Gateway** - Default to 1 (configurable for HA)
