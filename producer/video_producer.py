@@ -28,7 +28,7 @@ class VideoProducer:
             bootstrap_servers=self.bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode('utf-8'),
             key_serializer=lambda k: k.encode('utf-8') if k else None,
-            acks='all',  # Wait for all replicas to acknowledge
+            acks=1,  # Only wait for leader acknowledgment (faster, allows true parallel processing)
             retries=3,
             max_in_flight_requests_per_connection=5,  # Allow more in-flight for better throughput
             compression_type='gzip',  # Compress messages for better throughput
@@ -58,9 +58,8 @@ class VideoProducer:
         frame_count = 0
         fps = cap.get(cv2.CAP_PROP_FPS)
         
-        print(f"Processing video: {video_path}")
-        print(f"Video ID: {video_id}, FPS: {fps}")
-        
+        # Don't print here - let the test script handle progress display
+        # This allows multiple videos to process in parallel without output conflicts
         try:
             while True:
                 ret, frame = cap.read()
@@ -90,29 +89,19 @@ class VideoProducer:
                     
                     # Send to Kafka (async for better throughput)
                     # Using video_id as key ensures all frames from same video go to same partition
-                    future = self.producer.send(
+                    # Don't wait for acknowledgment - fully async for parallel processing
+                    self.producer.send(
                         self.topic,
                         key=video_id,
                         value=message
                     )
-                    
-                    # Log every 30 frames to reduce noise (for 20-30 fps, this is ~1-1.5 seconds)
-                    if frame_count % 30 == 0:
-                        try:
-                            record_metadata = future.get(timeout=10)
-                            print(f"Frame {frame_count} sent to partition {record_metadata.partition}")
-                        except KafkaError as e:
-                            print(f"Error sending frame {frame_count}: {e}")
                 
                 frame_count += 1
             
-            print(f"Finished processing {frame_count} frames")
-            
             # Wait for all async sends to complete before closing
             # This ensures all frames are actually sent to Kafka
-            print("Flushing producer to ensure all messages are sent...")
+            # Don't print - let test script handle progress
             self.producer.flush(timeout=60)  # Wait up to 60 seconds for all messages
-            print("✓ All messages flushed to Kafka")
             
         finally:
             cap.release()

@@ -3,8 +3,51 @@
 
 # Parse command line arguments
 VIDEO_ARG=""
-if [ $# -gt 0 ]; then
-    VIDEO_ARG="$1"
+STREAM_INSTANCES=1  # Default to 1 instance
+FAST_TESTS=false    # Default to running all tests
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --instances|-i)
+            STREAM_INSTANCES="$2"
+            shift 2
+            ;;
+        --fast-tests|-f)
+            FAST_TESTS=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--instances N] [--fast-tests] [video_file]"
+            echo ""
+            echo "Options:"
+            echo "  --instances, -i N    Number of stream processor instances to run (default: 1)"
+            echo "                       Each instance processes a subset of Kafka partitions"
+            echo "                       Recommended: 1-6 (matches number of partitions)"
+            echo "  --fast-tests, -f     Run only fast unit tests (skips slow/integration tests)"
+            echo "                       Default: runs all tests"
+            echo ""
+            echo "Arguments:"
+            echo "  video_file           Optional path to a specific video file to process"
+            echo ""
+            exit 0
+            ;;
+        *)
+            if [ -z "$VIDEO_ARG" ]; then
+                VIDEO_ARG="$1"
+            else
+                echo "⚠️  Unknown argument: $1"
+                echo "Use --help for usage information"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate instances count
+if ! [[ "$STREAM_INSTANCES" =~ ^[1-9][0-9]*$ ]]; then
+    echo "❌ ERROR: --instances must be a positive integer (got: $STREAM_INSTANCES)"
+    exit 1
 fi
 
 echo "=========================================="
@@ -12,6 +55,64 @@ echo "FireWatch Complete Pipeline Test"
 echo "=========================================="
 if [ -n "$VIDEO_ARG" ]; then
     echo "Video: $VIDEO_ARG"
+fi
+echo "Stream instances: $STREAM_INSTANCES"
+
+# Run unit tests first
+echo ""
+echo "=========================================="
+echo "Running Unit Tests"
+echo "=========================================="
+echo ""
+
+# Check if pytest is available
+if ! python3 -c "import pytest" 2>/dev/null; then
+    echo "⚠️  Warning: pytest not found. Skipping unit tests."
+    echo "   Install with: pip3 install pytest"
+    echo ""
+else
+    if [ "$FAST_TESTS" = true ]; then
+        echo "Running fast unit tests (skipping slow/integration tests)..."
+        # Run only the fastest, most critical unit tests
+        # Override pytest.ini to remove coverage options that cause issues
+        python3 -m pytest tests/test_utils.py tests/test_video_producer.py \
+            -v --tb=short \
+            --override-ini="addopts=-v --strict-markers --tb=short" 2>&1
+        
+        # Check if tests passed
+        TEST_EXIT_CODE=$?
+        if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "❌ Fast unit tests failed! Exiting..."
+            echo "   Fix the failing tests before running the pipeline test"
+            echo ""
+            exit $TEST_EXIT_CODE
+        else
+            echo ""
+            echo "✓ Fast unit tests passed"
+            echo ""
+        fi
+    else
+        echo "Running all unit tests..."
+        # Run all tests - override pytest.ini to remove coverage options that cause issues
+        python3 -m pytest tests/ \
+            -v --tb=short \
+            --override-ini="addopts=-v --strict-markers --tb=short" 2>&1
+        
+        # Check if tests passed
+        TEST_EXIT_CODE=$?
+        if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "❌ Unit tests failed! Exiting..."
+            echo "   Fix the failing tests before running the pipeline test"
+            echo ""
+            exit $TEST_EXIT_CODE
+        else
+            echo ""
+            echo "✓ All unit tests passed"
+            echo ""
+        fi
+    fi
 fi
 
 # Check if Kafka is running
@@ -128,6 +229,20 @@ echo "Starting All Components (Simultaneous)"
 echo "=========================================="
 echo ""
 
+# Kill any existing stream processor instances from previous runs
+echo "Cleaning up any existing stream processor instances..."
+pkill -f "fire_detection_stream.py" 2>/dev/null && sleep 2 || true
+pkill -f "test_with_videos.py" 2>/dev/null && sleep 1 || true
+pkill -f "s3_video_consumer.py" 2>/dev/null && sleep 1 || true
+echo "  ✓ Cleanup complete"
+
+# Clean up progress file from previous runs
+PROGRESS_FILE="/tmp/firewatch_video_progress.json"
+if [ -f "$PROGRESS_FILE" ]; then
+    rm -f "$PROGRESS_FILE"
+    echo "  ✓ Removed old progress file"
+fi
+
 # Create timestamped output directory
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT_DIR="clips/${TIMESTAMP}"
@@ -138,26 +253,59 @@ echo ""
 # Create logs directory
 mkdir -p logs
 
-# Start fire detection stream in background with timestamped output directory
+# Start fire detection stream processors in background with timestamped output directory
 # Use unique consumer group ID to avoid offset issues from previous test runs
-echo "1. Starting fire detection stream processor..."
+# All instances use the same consumer group ID so Kafka partitions are shared
+echo "1. Starting fire detection stream processor(s)..."
 export KAFKA_GROUP_ID="fire-detection-stream-test-${TIMESTAMP}"
-CLIP_STORAGE_PATH="$OUTPUT_DIR" KAFKA_GROUP_ID="$KAFKA_GROUP_ID" python3 streams/fire_detection_stream.py > logs/stream.log 2>&1 &
-STREAM_PID=$!
-echo "   Stream PID: $STREAM_PID"
-echo "   Log file: logs/stream.log"
 
-# Wait for stream to initialize
+# Array to store all stream PIDs
+STREAM_PIDS=()
+
+# Start multiple instances
+for i in $(seq 1 $STREAM_INSTANCES); do
+    if [ $STREAM_INSTANCES -eq 1 ]; then
+        LOG_FILE="logs/stream.log"
+    else
+        LOG_FILE="logs/stream_${i}.log"
+    fi
+    
+    echo "   Starting instance $i/$STREAM_INSTANCES..."
+    CLIP_STORAGE_PATH="$OUTPUT_DIR" KAFKA_GROUP_ID="$KAFKA_GROUP_ID" python3 streams/fire_detection_stream.py > "$LOG_FILE" 2>&1 &
+    INSTANCE_PID=$!
+    STREAM_PIDS+=($INSTANCE_PID)
+    echo "   Instance $i PID: $INSTANCE_PID"
+    echo "   Instance $i log: $LOG_FILE"
+done
+
+# Wait for streams to initialize
 sleep 3
 
-# Check if stream is running
-if ! kill -0 $STREAM_PID 2>/dev/null; then
-    echo "❌ ERROR: Stream processor failed to start!"
-    echo "Check logs/stream.log for errors"
+# Check if all streams are running
+ALL_RUNNING=true
+for i in "${!STREAM_PIDS[@]}"; do
+    PID=${STREAM_PIDS[$i]}
+    INSTANCE_NUM=$((i + 1))
+    if ! kill -0 $PID 2>/dev/null; then
+        echo "❌ ERROR: Stream processor instance $INSTANCE_NUM failed to start!"
+        if [ $STREAM_INSTANCES -eq 1 ]; then
+            echo "Check logs/stream.log for errors"
+        else
+            echo "Check logs/stream_${INSTANCE_NUM}.log for errors"
+        fi
+        ALL_RUNNING=false
+    fi
+done
+
+if [ "$ALL_RUNNING" = false ]; then
+    # Kill any running instances
+    for PID in "${STREAM_PIDS[@]}"; do
+        kill -TERM $PID 2>/dev/null || true
+    done
     exit 1
 fi
 
-echo "   ✓ Stream processor is running"
+echo "   ✓ All $STREAM_INSTANCES stream processor instance(s) are running"
 echo ""
 
 # Start S3 upload consumer in background (if S3 is configured)
@@ -182,11 +330,21 @@ fi
 echo ""
 
 # Start video producer in background (processes videos and sends frames to Kafka)
+PROGRESS_FILE="/tmp/firewatch_video_progress.json"
 echo "3. Starting video producer (processing videos and sending frames to Kafka)..."
-if [ -n "$VIDEO_ARG" ]; then
-    python3 scripts/test_with_videos.py "$VIDEO_ARG" > logs/producer.log 2>&1 &
+# If using multiple stream instances, process multiple videos to utilize all instances
+# Otherwise, process single video (or specified video)
+if [ "$STREAM_INSTANCES" -gt 1 ] && [ -z "$VIDEO_ARG" ]; then
+    # Multiple instances but no specific video - process multiple videos in parallel
+    echo "   Processing multiple videos in parallel (to utilize $STREAM_INSTANCES stream instances)..."
+    PROGRESS_FILE="$PROGRESS_FILE" STREAM_INSTANCES="$STREAM_INSTANCES" python3 scripts/test_with_videos.py > logs/producer.log 2>&1 &
+elif [ -n "$VIDEO_ARG" ]; then
+    # Specific video provided - process just that one
+    echo "   Processing single video: $VIDEO_ARG"
+    PROGRESS_FILE="$PROGRESS_FILE" python3 scripts/test_with_videos.py "$VIDEO_ARG" > logs/producer.log 2>&1 &
 else
-    python3 scripts/test_with_videos.py > logs/producer.log 2>&1 &
+    # Single instance, no specific video - process default
+    PROGRESS_FILE="$PROGRESS_FILE" python3 scripts/test_with_videos.py > logs/producer.log 2>&1 &
 fi
 PRODUCER_PID=$!
 echo "   Producer PID: $PRODUCER_PID"
@@ -386,158 +544,76 @@ while true; do
     fi
     
     if [ $ELAPSED -gt 0 ] && [ "$SKIP_PROGRESS_BAR" = false ]; then
-        # Calculate progress based on actual data, not elapsed time
-        # Get Kafka topic stats (lag and total messages)
-        STATS=$(get_topic_stats)
-        STATUS=$(echo "$STATS" | cut -d: -f1)
-        LAG=$(echo "$STATS" | cut -d: -f2)
-        TOTAL_MSGS=$(echo "$STATS" | cut -d: -f3)
+        # Print per-video progress bars (Producer + Stream for each video)
+        if [ -f "$PROGRESS_FILE" ]; then
+            # Read video progress from file and update stream progress from Kafka
+            VIDEO_COUNT=$(python3 -c "import json; d=json.load(open('$PROGRESS_FILE')); print(len(d.get('videos', [])))" 2>/dev/null || echo "0")
+            if [ "$VIDEO_COUNT" -gt 0 ]; then
+                # Move cursor up to clear previous video progress bars (2 lines per video: producer + stream)
+                printf "\033[%dA" "$((VIDEO_COUNT * 2))"
+                
+                # Print progress bars for each video (Producer + Stream)
+                # Both producer_progress and stream_progress are written to the file by their respective processes
+                PROGRESS_FILE="$PROGRESS_FILE" python3 << 'PYTHON_EOF'
+import json
+import sys
+import os
+
+try:
+    # Read progress file (both producer and stream write to this file)
+    progress_file = os.environ.get('PROGRESS_FILE', '/tmp/firewatch_video_progress.json')
+    with open(progress_file) as f:
+        data = json.load(f)
+    
+    # Display each video with Producer and Stream bars
+    # Producer writes producer_progress, stream processor writes stream_progress
+    for video in data.get('videos', []):
+        name = video['name'][:32]
+        producer_prog = video.get('producer_progress', 0)
+        stream_prog = video.get('stream_progress', 0)  # Read from file (updated by stream processor)
         
-        # Create progress bar (40 characters for each bar)
-        BAR_LENGTH=40
+        # CRITICAL: Stream can NEVER exceed producer progress (can't process more than sent)
+        # Cap stream progress at producer progress
+        if stream_prog > producer_prog:
+            stream_prog = producer_prog
         
-        # Track maximum total messages seen
-        if [ -n "$TOTAL_MSGS" ] && [ "$TOTAL_MSGS" -gt "$MAX_TOTAL_MSGS" ]; then
-            MAX_TOTAL_MSGS=$TOTAL_MSGS
-        fi
+        # Create bars
+        bar_length = 25
+        prod_filled = int((producer_prog * bar_length) / 100)
+        prod_bar = '█' * prod_filled + '░' * (bar_length - prod_filled)
         
-        # Lock the denominator once producer finishes (prevents progress from going backwards)
-        if [ "$PRODUCER_DONE" = true ] && [ "$LOCKED_TOTAL_MSGS" -eq 0 ]; then
-            # Use MAX_TOTAL_MSGS as the final count (or current if max wasn't tracked properly)
-            if [ "$MAX_TOTAL_MSGS" -gt 0 ]; then
-                LOCKED_TOTAL_MSGS=$MAX_TOTAL_MSGS
-            else
-                LOCKED_TOTAL_MSGS=$TOTAL_MSGS
+        stream_filled = int((stream_prog * bar_length) / 100)
+        stream_bar = '█' * stream_filled + '░' * (bar_length - stream_filled)
+        
+        # Print Producer bar (use newline, not carriage return, since we're printing multiple videos)
+        print(f'📤 {name:<32} Producer: [{prod_bar}] {producer_prog:3d}%')
+        # Print Stream bar
+        print(f'📥 {name:<32} Stream:   [{stream_bar}] {stream_prog:3d}%')
+except Exception as e:
+    # Fallback: just show producer progress
+    try:
+        progress_file = os.environ.get('PROGRESS_FILE', '/tmp/firewatch_video_progress.json')
+        with open(progress_file) as f:
+            data = json.load(f)
+        for video in data.get('videos', []):
+            name = video['name'][:32]
+            producer_prog = video.get('producer_progress', 0)
+            stream_prog = video.get('stream_progress', 0)
+            bar_length = 25
+            prod_filled = int((producer_prog * bar_length) / 100)
+            prod_bar = '█' * prod_filled + '░' * (bar_length - prod_filled)
+            stream_filled = int((stream_prog * bar_length) / 100)
+            stream_bar = '█' * stream_filled + '░' * (bar_length - stream_filled)
+            print(f'📤 {name:<32} Producer: [{prod_bar}] {producer_prog:3d}%')
+            print(f'📥 {name:<32} Stream:   [{stream_bar}] {stream_prog:3d}%')
+    except:
+        pass
+PYTHON_EOF
+                
+                # Move cursor back down
+                printf "\033[%dB" "$((VIDEO_COUNT * 2))"
             fi
         fi
-        
-        # Producer progress bar - based on actual messages in topic
-        if [ "$PRODUCER_DONE" = false ]; then
-            # Producer still running - use TOTAL_MSGS as progress indicator
-            # Since we don't know final count, use a logarithmic scale that increases smoothly
-            # but caps at 90% until producer finishes
-            if [ -n "$TOTAL_MSGS" ] && [ "$TOTAL_MSGS" -gt 0 ]; then
-                # Use a simple formula: progress = min(90, log_scale(TOTAL_MSGS))
-                # For smooth increase: progress = min(90, (TOTAL_MSGS / (TOTAL_MSGS + 500)) * 90)
-                # This gives: 0 messages = 0%, 100 messages = ~15%, 500 messages = ~45%, 2000 messages = ~78%, etc.
-                PRODUCER_PROGRESS=$((TOTAL_MSGS * 90 / (TOTAL_MSGS + 500)))
-                if [ $PRODUCER_PROGRESS -gt 90 ]; then
-                    PRODUCER_PROGRESS=90
-                fi
-                if [ $PRODUCER_PROGRESS -lt 1 ] && [ "$TOTAL_MSGS" -gt 0 ]; then
-                    PRODUCER_PROGRESS=1
-                fi
-            else
-                # Can't get stats - use time-based fallback
-                PRODUCER_PROGRESS=$((ELAPSED * 100 / MAX_WAIT))
-                if [ $PRODUCER_PROGRESS -gt 90 ]; then
-                    PRODUCER_PROGRESS=90
-                fi
-            fi
-        else
-            PRODUCER_PROGRESS=100
-        fi
-        
-        # Stream progress bar - based on actual messages processed (monotonically increasing)
-        # CRITICAL: Progress bars should NEVER go backwards - track maximum processed count
-        if [ -n "$TOTAL_MSGS" ] && [ "$TOTAL_MSGS" -gt 0 ]; then
-            # Calculate current processed messages (total - lag)
-            PROCESSED=$((TOTAL_MSGS - LAG))
-            if [ $PROCESSED -lt 0 ]; then
-                PROCESSED=0
-            fi
-            
-            # Track maximum processed count seen (prevents progress from going backwards)
-            # This handles cases where lag increases faster than new messages arrive
-            if [ $PROCESSED -gt $MAX_PROCESSED ]; then
-                MAX_PROCESSED=$PROCESSED
-            fi
-            
-            # Use locked total as denominator if producer finished, otherwise use max seen
-            # This prevents the denominator from changing and causing progress to go backwards
-            if [ "$LOCKED_TOTAL_MSGS" -gt 0 ]; then
-                # Producer finished - use locked total (stable denominator)
-                DENOMINATOR=$LOCKED_TOTAL_MSGS
-            elif [ "$MAX_TOTAL_MSGS" -gt 0 ]; then
-                # Producer still running - use max seen so far (may still increase, but better than current)
-                DENOMINATOR=$MAX_TOTAL_MSGS
-            else
-                # Fallback: use current total (will fluctuate, but better than nothing)
-                DENOMINATOR=$TOTAL_MSGS
-            fi
-            
-            # Calculate progress using maximum processed count (never decreases)
-            # This ensures progress bar only moves forward, never backwards
-            if [ "$DENOMINATOR" -gt 0 ]; then
-                CALCULATED_PROGRESS=$((MAX_PROCESSED * 100 / DENOMINATOR))
-            else
-                CALCULATED_PROGRESS=0
-            fi
-            
-            # Cap at 100% and ensure non-negative
-            if [ $CALCULATED_PROGRESS -gt 100 ]; then
-                CALCULATED_PROGRESS=100
-            fi
-            if [ $CALCULATED_PROGRESS -lt 0 ]; then
-                CALCULATED_PROGRESS=0
-            fi
-            
-            # CRITICAL: Never let progress decrease - use maximum progress seen
-            # This handles edge cases where denominator changes or calculations fluctuate
-            if [ $CALCULATED_PROGRESS -gt $MAX_STREAM_PROGRESS ]; then
-                MAX_STREAM_PROGRESS=$CALCULATED_PROGRESS
-            fi
-            STREAM_PROGRESS=$MAX_STREAM_PROGRESS
-        else
-            # Can't get stats - use time-based estimate (only as fallback)
-            STREAM_PROGRESS=$((ELAPSED * 100 / MAX_WAIT / 3))
-            if [ $STREAM_PROGRESS -gt 100 ]; then
-                STREAM_PROGRESS=100
-            fi
-        fi
-        
-        # Calculate filled/empty for producer bar
-        PRODUCER_FILLED=$((PRODUCER_PROGRESS * BAR_LENGTH / 100))
-        if [ $PRODUCER_FILLED -gt $BAR_LENGTH ]; then
-            PRODUCER_FILLED=$BAR_LENGTH
-        fi
-        PRODUCER_EMPTY=$((BAR_LENGTH - PRODUCER_FILLED))
-        
-        # Build producer bar string
-        PRODUCER_BAR=""
-        if [ $PRODUCER_FILLED -gt 0 ]; then
-            for i in $(seq 1 $PRODUCER_FILLED); do
-                PRODUCER_BAR="${PRODUCER_BAR}█"
-            done
-        fi
-        if [ $PRODUCER_EMPTY -gt 0 ]; then
-            for i in $(seq 1 $PRODUCER_EMPTY); do
-                PRODUCER_BAR="${PRODUCER_BAR}░"
-            done
-        fi
-        
-        # Calculate filled/empty for stream bar
-        STREAM_FILLED=$((STREAM_PROGRESS * BAR_LENGTH / 100))
-        if [ $STREAM_FILLED -gt $BAR_LENGTH ]; then
-            STREAM_FILLED=$BAR_LENGTH
-        fi
-        STREAM_EMPTY=$((BAR_LENGTH - STREAM_FILLED))
-        
-        # Build stream bar string
-        STREAM_BAR=""
-        if [ $STREAM_FILLED -gt 0 ]; then
-            for i in $(seq 1 $STREAM_FILLED); do
-                STREAM_BAR="${STREAM_BAR}█"
-            done
-        fi
-        if [ $STREAM_EMPTY -gt 0 ]; then
-            for i in $(seq 1 $STREAM_EMPTY); do
-                STREAM_BAR="${STREAM_BAR}░"
-            done
-        fi
-        
-        # Print both progress bars - always overwrite the same line using \r and \033[K
-        printf "\r\033[K📤 Producer: [%s] %d%% | 📥 Stream: [%s] %d%%" "$PRODUCER_BAR" "$PRODUCER_PROGRESS" "$STREAM_BAR" "$STREAM_PROGRESS"
     fi
     
     sleep 1
@@ -562,19 +638,42 @@ sleep 3
 echo ""
 echo "Stopping all components gracefully..."
 
-# Stop stream processor
-if kill -0 $STREAM_PID 2>/dev/null; then
-    echo "  Stopping stream processor..."
-    kill -TERM $STREAM_PID 2>/dev/null
+# Stop all stream processor instances
+if [ ${#STREAM_PIDS[@]} -gt 0 ]; then
+    echo "  Stopping stream processor instance(s)..."
+    for i in "${!STREAM_PIDS[@]}"; do
+        PID=${STREAM_PIDS[$i]}
+        INSTANCE_NUM=$((i + 1))
+        if kill -0 $PID 2>/dev/null; then
+            echo "    Stopping instance $INSTANCE_NUM (PID: $PID)..."
+            kill -TERM $PID 2>/dev/null
+        fi
+    done
+    
+    # Wait for all instances to stop gracefully
     for i in {1..10}; do
-        if ! kill -0 $STREAM_PID 2>/dev/null; then
+        ALL_STOPPED=true
+        for PID in "${STREAM_PIDS[@]}"; do
+            if kill -0 $PID 2>/dev/null; then
+                ALL_STOPPED=false
+                break
+            fi
+        done
+        if [ "$ALL_STOPPED" = true ]; then
             break
         fi
         sleep 1
     done
-    if kill -0 $STREAM_PID 2>/dev/null; then
-        kill -KILL $STREAM_PID 2>/dev/null
-    fi
+    
+    # Force kill any remaining instances
+    for i in "${!STREAM_PIDS[@]}"; do
+        PID=${STREAM_PIDS[$i]}
+        if kill -0 $PID 2>/dev/null; then
+            INSTANCE_NUM=$((i + 1))
+            echo "    Force killing instance $INSTANCE_NUM (PID: $PID)..."
+            kill -KILL $PID 2>/dev/null
+        fi
+    done
 fi
 
 # Stop S3 consumer
@@ -601,13 +700,25 @@ echo "Processing Complete"
 echo "=========================================="
 echo ""
 
-# Show final stream log summary
-if [ -f "logs/stream.log" ]; then
-    echo "📊 Final Stream Summary:"
-    echo ""
-    grep -E 'Video Complete|READY TO WATCH|Summary|fires detected' logs/stream.log 2>/dev/null | tail -20 || true
-    echo ""
+# Show final stream log summary (from all instances)
+echo "📊 Final Stream Summary:"
+echo ""
+if [ $STREAM_INSTANCES -eq 1 ]; then
+    if [ -f "logs/stream.log" ]; then
+        grep -E 'Video Complete|READY TO WATCH|Summary|fires detected' logs/stream.log 2>/dev/null | tail -20 || true
+    fi
+else
+    # Show summary from all instances
+    for i in $(seq 1 $STREAM_INSTANCES); do
+        LOG_FILE="logs/stream_${i}.log"
+        if [ -f "$LOG_FILE" ]; then
+            echo "Instance $i:"
+            grep -E 'Video Complete|READY TO WATCH|Summary|fires detected' "$LOG_FILE" 2>/dev/null | tail -10 || true
+            echo ""
+        fi
+    done
 fi
+echo ""
 
 # Show completed videos
 echo "📹 Completed Videos:"
@@ -631,6 +742,21 @@ if [ -d "$CLIPS_DIR" ]; then
 else
     echo "  (No videos found in $CLIPS_DIR)"
 fi
+
+# Clean up all temporary files
+echo "Cleaning up temporary files..."
+if [ -f "$PROGRESS_FILE" ]; then
+    rm -f "$PROGRESS_FILE"
+    echo "  ✓ Removed progress file: $PROGRESS_FILE"
+fi
+
+# Clean up test codec file if it exists
+if [ -f "/tmp/test_codec_firewatch.mp4" ]; then
+    rm -f "/tmp/test_codec_firewatch.mp4"
+    echo "  ✓ Removed test codec file: /tmp/test_codec_firewatch.mp4"
+fi
+
+echo "  ✓ Cleanup complete"
 
 echo ""
 echo "=========================================="

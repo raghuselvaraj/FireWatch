@@ -113,7 +113,16 @@ class FireDetectionModel:
             print(f"Loading fire-detect-nn model from: {weights_path}")
             
             # Use FireClassifier from the repository (DenseNet121 with binary classification)
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # Device priority: CUDA (NVIDIA GPU) > MPS (Apple Silicon GPU) > CPU
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+                print("  Using CUDA (NVIDIA GPU) for acceleration")
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = torch.device("mps")
+                print("  Using MPS (Apple Silicon GPU) for acceleration")
+            else:
+                device = torch.device("cpu")
+                print("  Using CPU (no GPU acceleration available)")
             model = FireClassifier(backbone='densenet121', pretrained=False)
             
             # Load pretrained weights
@@ -553,9 +562,9 @@ class FireDetectionStream:
             auto_offset_reset='earliest',  # Read from beginning if no offset exists
             enable_auto_commit=False,  # Manual commit to ensure we process all messages
             consumer_timeout_ms=2147483647,  # Wait indefinitely for messages (max int32 value, ~24 days)
-            max_poll_records=100,  # Process up to 100 records per poll for better throughput
-            fetch_min_bytes=16384,  # Wait for at least 16KB before returning (increased for better throughput)
-            fetch_max_wait_ms=100,  # Reduced wait time for lower latency
+            max_poll_records=300,  # Process up to 300 records per poll (increased from 100 for better throughput)
+            fetch_min_bytes=32768,  # Wait for at least 32KB before returning (increased from 16KB for better throughput)
+            fetch_max_wait_ms=500,  # Increased wait time from 100ms to 500ms to allow batching
             max_partition_fetch_bytes=10485760  # 10MB per partition (increased for better throughput)
         )
         
@@ -575,18 +584,17 @@ class FireDetectionStream:
         self.detections_topic = config.KAFKA_DETECTIONS_TOPIC
         self.video_completions_topic = config.KAFKA_VIDEO_COMPLETIONS_TOPIC
         
-        # Track video state for incremental writing
-        self.current_video_id = None
-        self.video_writer = None  # OpenCV VideoWriter for current video
-        self.video_fps = None
-        self.video_width = None
-        self.video_height = None
-        self.video_filepath = None
-        self.video_frame_count = 0
-        self.video_start_timestamp = None  # First frame timestamp for filename
-        self.last_frame_number = None  # Track last frame number to detect video end
-        self.last_frame = None  # Store last frame for final buffer flush
+        # Track video state for incremental writing - SUPPORT MULTIPLE VIDEOS IN PARALLEL
+        # Use dictionaries to track state per video_id, allowing parallel processing of multiple videos
+        self.video_writers = {}  # {video_id: VideoWriter} - allows multiple videos to be written simultaneously
+        self.video_metadata = {}  # {video_id: {"fps": float, "width": int, "height": int, "filepath": str, "start_timestamp": str}}
+        self.video_frame_counts = {}  # {video_id: int} - frame count per video (processed by stream)
+        self.video_total_frames = {}  # {video_id: int} - total frames expected per video (from producer)
+        self.video_last_frame_numbers = {}  # {video_id: int} - last frame number per video
+        self.video_last_frames = {}  # {video_id: np.ndarray} - last frame per video for final flush
         self.video_stats = {}  # Track stats per video: {video_id: {"frames": count, "fires": count, "max_prob": float}}
+        self.progress_file = os.getenv("PROGRESS_FILE", "/tmp/firewatch_video_progress.json")  # Progress file path
+        self.last_progress_update = {}  # {video_id: timestamp} - track when we last updated progress file
     
     def decode_frame(self, frame_data: str) -> np.ndarray:
         """Decode base64 frame data to numpy array."""
@@ -596,33 +604,47 @@ class FireDetectionStream:
         return frame
     
     def _initialize_video_writer(self, video_id: str, width: int, height: int, fps: float) -> Optional[str]:
-        """Initialize video writer for a new video."""
-        # Don't re-initialize if writer already exists
-        if self.video_writer is not None:
-            return self.video_filepath
+        """Initialize video writer for a new video (supports multiple videos in parallel)."""
+        # Don't re-initialize if writer already exists for this video
+        if video_id in self.video_writers and self.video_writers[video_id] is not None:
+            return self.video_metadata.get(video_id, {}).get("filepath")
             
         try:
-            # Generate output path using the first frame timestamp
-            timestamp_str = self.video_start_timestamp.replace(":", "-").replace(".", "-") if self.video_start_timestamp else datetime.utcnow().isoformat().replace(":", "-").replace(".", "-")
+            # Generate output path using the first frame timestamp for this video
+            start_timestamp = self.video_metadata.get(video_id, {}).get("start_timestamp")
+            if not start_timestamp:
+                start_timestamp = datetime.utcnow().isoformat()
+            # Use the output directory from config (already set to timestamped directory by script)
             output_dir = config.CLIP_STORAGE_PATH
             os.makedirs(output_dir, exist_ok=True)
             filename = f"{video_id}_with_heatmaps.mp4"
             filepath = os.path.join(output_dir, filename)
             
-            # Create video writer
-            # Try HEVC (H.265) first, fallback to H.264 (AVC), then mp4v
+            # Safety check: Warn if file already exists (shouldn't happen with timestamped directories)
+            if os.path.exists(filepath):
+                print(f"⚠️  WARNING: Output file already exists: {filepath}")
+                print(f"   This may indicate an old stream processor instance is still running.")
+                print(f"   The file will be overwritten. Consider killing old processes.")
+                # Add a unique suffix to prevent overwriting
+                base, ext = os.path.splitext(filepath)
+                counter = 1
+                while os.path.exists(filepath):
+                    filepath = f"{base}_{counter}{ext}"
+                    counter += 1
+                print(f"   Using alternative path: {filepath}")
+            
+            # Create video writer - prioritize HEVC
             fourcc = None
             codec_used = None
             
+            # Try codecs in order: HEVC first, then AVC fallback
             for codec_name in ['HEVC', 'hvc1', 'avc1', 'H264', 'mp4v']:
                 try:
                     test_fourcc = cv2.VideoWriter_fourcc(*codec_name)
-                    # Test if codec works by creating a temporary writer
                     test_path = '/tmp/test_codec_firewatch.mp4'
                     test_writer = cv2.VideoWriter(test_path, test_fourcc, fps, (width, height))
                     if test_writer.isOpened():
                         test_writer.release()
-                        # Clean up test file
                         if os.path.exists(test_path):
                             os.remove(test_path)
                         fourcc = test_fourcc
@@ -633,41 +655,140 @@ class FireDetectionStream:
                     continue
             
             if fourcc is None:
-                # Final fallback
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 codec_used = 'mp4v'
                 print(f"⚠️  Using fallback codec: mp4v")
             
             # Create VideoWriter
-            # Note: OpenCV VideoWriter doesn't support quality/bitrate settings directly
-            # File size depends on codec compression efficiency:
-            # - HEVC/H.264: Better compression (smaller files)
-            # - mp4v: Poor compression (larger files)
-            # Resolution and frame rate also affect file size significantly
-            self.video_writer = cv2.VideoWriter(filepath, fourcc, fps, (width, height))
+            video_writer = cv2.VideoWriter(filepath, fourcc, fps, (width, height))
             
-            if not self.video_writer.isOpened():
+            if not video_writer.isOpened():
                 print(f"Error: Could not open video writer for {filepath}")
-                self.video_writer = None
                 return None
+            
+            # Store writer and metadata for this video
+            self.video_writers[video_id] = video_writer
+            self.video_metadata[video_id] = {
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "filepath": filepath,
+                "start_timestamp": start_timestamp
+            }
+            self.video_frame_counts[video_id] = 0
             
             # Log estimated file size info
             # Rough estimate: ~1-5 MB per minute at 640x480 depending on codec
             estimated_size_mb = (fps * 60 * 2.5) / 1024  # ~2.5MB per minute estimate
+            print(f"📹 Started writing video {video_id}: {filepath}")
             print(f"  Codec: {codec_used}, Resolution: {width}x{height}, FPS: {fps:.1f}")
             print(f"  Estimated file size: ~{estimated_size_mb:.1f}MB per minute of video")
-            
-            self.video_filepath = filepath
-            self.video_frame_count = 0
-            print(f"📹 Started writing video: {filepath}")
             return filepath
             
         except Exception as e:
-            print(f"Error initializing video writer: {e}")
+            print(f"Error initializing video writer for {video_id}: {e}")
             import traceback
             traceback.print_exc()
-            self.video_writer = None
+            if video_id in self.video_writers:
+                self.video_writers[video_id] = None
             return None
+    
+    def _update_stream_progress(self, video_id: str):
+        """Update progress file with per-video stream progress."""
+        try:
+            import json
+            import fcntl
+            import time
+            
+            # Read current progress file with file locking to prevent race conditions
+            max_retries = 5
+            retry_delay = 0.1
+            progress_data = {"videos": []}
+            
+            for attempt in range(max_retries):
+                try:
+                    with open(self.progress_file, 'r') as f:
+                        # Try to acquire a shared lock (non-blocking)
+                        fcntl.flock(f.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        progress_data = json.load(f)
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                        break
+                except (IOError, OSError, json.JSONDecodeError):
+                    # File locked or invalid JSON - retry
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    # Last attempt failed - use empty data
+                    progress_data = {"videos": []}
+            
+            # Calculate stream progress for this video
+            frames_processed = self.video_frame_counts.get(video_id, 0)
+            
+            # Get producer's current progress and total_frames from the progress file
+            producer_prog = 0
+            total_frames = None
+            video_found = False
+            for v in progress_data["videos"]:
+                if v.get("video_id") == video_id:
+                    video_found = True
+                    producer_prog = v.get("producer_progress", 0)
+                    # Get total_frames to calculate progress relative to total video
+                    if "total_frames" in v and v["total_frames"] > 0:
+                        total_frames = v["total_frames"]
+                    break
+            
+            # Calculate stream progress relative to TOTAL frames (same as producer)
+            # But ensure it never exceeds producer progress (can't process more than sent)
+            if total_frames and total_frames > 0:
+                # Stream progress = frames processed / total frames (same denominator as producer)
+                # Ensure 100% when frames_processed >= total_frames
+                if frames_processed >= total_frames:
+                    stream_prog = min(100, producer_prog)  # Cap at producer progress
+                else:
+                    stream_prog_raw = int((frames_processed * 100) / total_frames)
+                    # CRITICAL: Stream can NEVER exceed producer progress (can't process more than sent)
+                    stream_prog = min(stream_prog_raw, producer_prog, 100)
+            else:
+                # Can't calculate yet - don't reset to 0, keep previous value if exists
+                stream_prog = None
+            
+            # Update this video's stream progress in the file
+            if video_found:
+                for v in progress_data["videos"]:
+                    if v.get("video_id") == video_id:
+                        # Only update if we have a valid progress value (don't reset to 0)
+                        if stream_prog is not None:
+                            # Never decrease progress - use max of current and new
+                            current_prog = v.get("stream_progress", 0)
+                            v["stream_progress"] = max(current_prog, stream_prog)
+                        break
+            else:
+                # Video not found - add it only if we have valid progress
+                if stream_prog is not None:
+                    progress_data["videos"].append({
+                        "video_id": video_id,
+                        "name": video_id,
+                        "producer_progress": 0,
+                        "stream_progress": stream_prog
+                    })
+            
+            # Write updated progress file with file locking
+            for attempt in range(max_retries):
+                try:
+                    with open(self.progress_file, 'w') as f:
+                        # Try to acquire an exclusive lock (non-blocking)
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        json.dump(progress_data, f)
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                        break
+                except (IOError, OSError):
+                    # File locked - retry
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+        except Exception as e:
+            # Silently fail - don't spam logs
+            pass
     
     def _publish_video_completion(self, video_id: str, local_filepath: str, stats: Dict[str, Any], video_metadata: Dict[str, Any]):
         """Publish video completion event to Kafka for S3 upload consumer."""
@@ -690,164 +811,212 @@ class FireDetectionStream:
         except Exception as e:
             print(f"⚠️  Error publishing video completion: {e}")
     
-    def _close_video_writer(self, print_summary: bool = True) -> Optional[str]:
-        """Close the current video writer and publish completion event for S3 upload."""
-        if self.video_writer is not None:
-            try:
-                filepath = self.video_filepath
-                frame_count = self.video_frame_count
-                video_id = self.current_video_id
-                
-                # Properly release the video writer (this finalizes the file and writes moov atom)
-                # This is critical - without proper release, the moov atom won't be written
-                # and the file will be unplayable (moov atom not found error)
-                #
-                # IMPORTANT: OpenCV VideoWriter buffers frames in memory and only writes them
-                # to disk when release() is called. If the process is killed before release(),
-                # buffered frames are lost and the file size gets "stuck" at a partial size.
-                # That's why the video was stuck at 23MB - frames were buffered but never written.
-                file_size_before = os.path.getsize(filepath) if filepath and os.path.exists(filepath) else 0
-                print(f"  Releasing video writer (frames written: {frame_count}, current file size: {file_size_before / 1024 / 1024:.1f}MB)...")
-                
-                # Ensure all frames are written before release
-                # OpenCV VideoWriter buffers frames, so we need to make sure everything is flushed
-                if self.video_writer is not None and self.video_writer.isOpened():
-                    # Force buffer flush by writing a final frame (some codecs need this)
-                    try:
-                        # Get the last frame if available to ensure buffer is flushed
-                        if self.last_frame is not None:
-                            self.video_writer.write(self.last_frame)
-                    except:
-                        pass
-                
-                self.video_writer.release()
-                self.video_writer = None  # Clear reference immediately
-                
-                # Force Python to flush file handles and garbage collect
-                import gc
-                gc.collect()
-                
-                # Give the OS time to flush file buffers and finalize the MP4 structure
-                # The moov atom (metadata) is written during release, but we need to ensure
-                # it's fully written to disk before proceeding
-                import time
-                time.sleep(3.0)  # Increased wait time to ensure proper finalization
-                
-                # Force file system sync to ensure data is written to disk
+    def _close_video_writer(self, video_id: str, print_summary: bool = True) -> Optional[str]:
+        """Close the video writer for a specific video and publish completion event for S3 upload."""
+        if video_id not in self.video_writers or self.video_writers[video_id] is None:
+            return None
+            
+        try:
+            video_writer = self.video_writers[video_id]
+            metadata = self.video_metadata.get(video_id, {})
+            filepath = metadata.get("filepath")
+            frame_count = self.video_frame_counts.get(video_id, 0)
+            
+            # Properly release the video writer (this finalizes the file and writes moov atom)
+            # This is critical - without proper release, the moov atom won't be written
+            # and the file will be unplayable (moov atom not found error)
+            #
+            # IMPORTANT: OpenCV VideoWriter buffers frames in memory and only writes them
+            # to disk when release() is called. If the process is killed before release(),
+            # buffered frames are lost and the file size gets "stuck" at a partial size.
+            # That's why the video was stuck at 23MB - frames were buffered but never written.
+            file_size_before = os.path.getsize(filepath) if filepath and os.path.exists(filepath) else 0
+            print(f"  Releasing video writer (frames written: {frame_count}, current file size: {file_size_before / 1024 / 1024:.1f}MB)...")
+            
+            # Ensure all frames are written before release
+            # OpenCV VideoWriter buffers frames, so we need to make sure everything is flushed
+            # This was in the working version that generated valid videos
+            if video_writer is not None and video_writer.isOpened():
+                # Force buffer flush by writing the last frame (some codecs need this)
                 try:
-                    fd = os.open(filepath, os.O_RDONLY)
-                    os.fsync(fd)  # Force sync to disk
-                    os.close(fd)
+                    if video_id in self.video_last_frames and self.video_last_frames[video_id] is not None:
+                        video_writer.write(self.video_last_frames[video_id])
                 except:
                     pass
-                
-                # Check file size after release (should be larger as buffered frames are written)
+            
+            # CRITICAL: Properly release the video writer
+            # This writes the moov atom and finalizes the file
+            video_writer.release()
+            self.video_writers[video_id] = None  # Clear reference immediately
+            
+            # Force Python to flush file handles
+            import gc
+            gc.collect()
+            
+            # Give the OS time to flush file buffers and finalize the MP4 structure
+            # The moov atom (metadata) is written during release, but we need to ensure
+            # it's fully written to disk before proceeding
+            # Working version used 3.0 seconds - using 2.0 as compromise
+            import time
+            time.sleep(2.0)
+            
+            # Force file system sync to ensure data is written to disk
+            try:
                 if filepath and os.path.exists(filepath):
-                    file_size_after = os.path.getsize(filepath)
-                    if file_size_after > file_size_before:
-                        print(f"  ✓ Video finalized: {file_size_after / 1024 / 1024:.1f}MB (wrote {file_size_after - file_size_before} bytes from buffer)")
-                    else:
-                        print(f"  ⚠️  File size unchanged after release (may indicate issue)")
+                    fd = os.open(filepath, os.O_RDONLY)
+                    os.fsync(fd)
+                    os.close(fd)
+            except:
+                pass
+            
+            # Check file size after release (should be larger as buffered frames are written)
+            if filepath and os.path.exists(filepath):
+                file_size_after = os.path.getsize(filepath)
+                if file_size_after > file_size_before:
+                    print(f"  ✓ Video finalized: {file_size_after / 1024 / 1024:.1f}MB (wrote {file_size_after - file_size_before} bytes from buffer)")
+                else:
+                    print(f"  ⚠️  File size unchanged after release (may indicate issue)")
+            
+            # Verify the file exists and has content
+            if filepath and os.path.exists(filepath):
+                file_size = os.path.getsize(filepath)
+                if file_size == 0:
+                    print(f"⚠️  Warning: Video file is empty: {filepath}")
+                    return None
                 
-                # Verify the file exists and has content
-                if filepath and os.path.exists(filepath):
-                    file_size = os.path.getsize(filepath)
-                    if file_size == 0:
-                        print(f"⚠️  Warning: Video file is empty: {filepath}")
-                        return None
-                    
-                    # Verify video can be opened (checks for moov atom presence)
-                    # Give extra time for file system to sync
-                    import time
-                    time.sleep(1.0)
-                    
-                    test_cap = cv2.VideoCapture(filepath)
-                    if not test_cap.isOpened():
-                        print(f"⚠️  Warning: Video file may be corrupted (moov atom missing): {filepath}")
-                        print(f"   This can happen if the process was terminated before video finalization")
-                        test_cap.release()
-                        return None
-                    
-                    # Check if video has valid frame count and duration
-                    frame_count = int(test_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    fps = test_cap.get(cv2.CAP_PROP_FPS)
+                # Verify video can be opened (checks for moov atom presence)
+                # Give extra time for file system to sync
+                import time
+                time.sleep(1.0)
+                
+                test_cap = cv2.VideoCapture(filepath)
+                if not test_cap.isOpened():
+                    print(f"⚠️  Warning: Video file may be corrupted (moov atom missing): {filepath}")
+                    print(f"   This can happen if OpenCV VideoWriter didn't properly finalize the file")
+                    print(f"   On macOS, try using 'avc1' codec for better compatibility")
                     test_cap.release()
+                    return None
+                else:
+                    test_cap.release()
+                
+                # Check if video has valid frame count and duration
+                frame_count = int(test_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = test_cap.get(cv2.CAP_PROP_FPS)
+                test_cap.release()
+                
+                if frame_count == 0 or fps == 0:
+                    print(f"⚠️  Warning: Video file has 0 frames or invalid FPS: {filepath}")
+                    metadata = self.video_metadata.get(video_id, {})
+                    expected_frames = metadata.get("fps", 30) * 60  # Rough estimate
+                    print(f"   Expected ~{expected_frames} frames at {metadata.get('fps', 30)} fps")
+                    print(f"   This may indicate the video writer did not finalize properly")
+                    # Don't return None - let the file exist even if it's not perfect
+                    # The file might still be playable in some players
+            
+            # Get stats
+            stats = self.video_stats.get(video_id, {})
+            fire_count = stats.get("fires", 0)
+            total_frames = stats.get("frames", frame_count)
+            max_prob = stats.get("max_prob", 0.0)
+            
+            # Get metadata
+            metadata = self.video_metadata.get(video_id, {})
+            
+            # Publish video completion event for S3 upload consumer
+            if video_id and filepath and os.path.exists(filepath):
+                self._publish_video_completion(
+                    video_id,
+                    filepath,
+                    {
+                        "total_frames": total_frames,
+                        "fire_count": fire_count,
+                        "max_fire_probability": max_prob
+                    },
+                    {
+                        "fps": metadata.get("fps"),
+                        "width": metadata.get("width"),
+                        "height": metadata.get("height"),
+                        "frame_count": frame_count
+                    }
+                )
+            
+            # Print summary if requested
+            if print_summary and video_id:
+                print(f"\n{'='*60}")
+                print(f"📹 Video Complete: {video_id}")
+                print(f"{'='*60}")
+                print(f"  Local file: {filepath}")
+                print(f"  Total frames: {total_frames}")
+                print(f"  Frames with fire: {fire_count}")
+                print(f"  Max fire probability: {max_prob:.2%}")
+                if fire_count == 0:
+                    print(f"  Result: ✅ No fires detected")
+                else:
+                    print(f"  Result: 🔥 Fire detected in {fire_count} frame(s)")
+                print(f"  → Published to {self.video_completions_topic} for S3 upload")
+                print(f"{'='*60}\n")
+            
+            # Clean up state for this video
+            if video_id in self.video_writers:
+                self.video_writers[video_id] = None
+            # Final progress update - ensure stream progress reaches 100% if all frames processed
+            if video_id in self.video_frame_counts:
+                frames_processed = self.video_frame_counts[video_id]
+                # Get total_frames from progress file to calculate final progress
+                try:
+                    import json
+                    import fcntl
+                    with open(self.progress_file, 'r') as f:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        progress_data = json.load(f)
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                     
-                    if frame_count == 0 or fps == 0:
-                        print(f"⚠️  Warning: Video file has 0 frames or invalid FPS: {filepath}")
-                        print(f"   Expected {self.video_frame_count} frames at {self.video_fps} fps")
-                        print(f"   This may indicate the video writer did not finalize properly")
-                        # Don't return None - let the file exist even if it's not perfect
-                        # The file might still be playable in some players
+                    for v in progress_data.get("videos", []):
+                        if v.get("video_id") == video_id:
+                            total_frames = v.get("total_frames", 0)
+                            producer_prog = v.get("producer_progress", 0)
+                            if total_frames > 0 and frames_processed >= total_frames:
+                                # All frames processed - set to 100% (capped at producer progress)
+                                v["stream_progress"] = min(100, producer_prog)
+                            elif total_frames > 0:
+                                # Update to final progress
+                                stream_prog = min(100, int((frames_processed * 100) / total_frames), producer_prog)
+                                v["stream_progress"] = max(v.get("stream_progress", 0), stream_prog)
+                            
+                            # Write updated progress
+                            with open(self.progress_file, 'w') as f:
+                                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                json.dump(progress_data, f)
+                                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                            break
+                except:
+                    pass  # Silently fail - progress update is best effort
                 
-                # Get stats
-                stats = self.video_stats.get(video_id, {})
-                fire_count = stats.get("fires", 0)
-                total_frames = stats.get("frames", frame_count)
-                max_prob = stats.get("max_prob", 0.0)
-                
-                # Publish video completion event for S3 upload consumer
-                if video_id and filepath and os.path.exists(filepath):
-                    self._publish_video_completion(
-                        video_id,
-                        filepath,
-                        {
-                            "total_frames": total_frames,
-                            "fire_count": fire_count,
-                            "max_fire_probability": max_prob
-                        },
-                        {
-                            "fps": self.video_fps,
-                            "width": self.video_width,
-                            "height": self.video_height,
-                            "frame_count": frame_count
-                        }
-                    )
-                
-                # Print summary if requested
-                if print_summary and video_id:
-                    print(f"\n{'='*60}")
-                    print(f"📹 Video Complete: {video_id}")
-                    print(f"{'='*60}")
-                    print(f"  Local file: {filepath}")
-                    print(f"  Total frames: {total_frames}")
-                    print(f"  Frames with fire: {fire_count}")
-                    print(f"  Max fire probability: {max_prob:.2%}")
-                    if fire_count == 0:
-                        print(f"  Result: ✅ No fires detected")
-                    else:
-                        print(f"  Result: 🔥 Fire detected in {fire_count} frame(s)")
-                    print(f"  → Published to {self.video_completions_topic} for S3 upload")
-                    print(f"{'='*60}\n")
-                
-                self.video_writer = None
-                self.video_filepath = None
-                self.video_frame_count = 0
-                return filepath
-            except Exception as e:
-                print(f"Error closing video writer: {e}")
+                self.video_frame_counts[video_id] = 0
+            return filepath
+        except Exception as e:
+                print(f"Error closing video writer for {video_id}: {e}")
                 import traceback
                 traceback.print_exc()
-                self.video_writer = None
-                self.video_filepath = None
+                if video_id in self.video_writers:
+                    self.video_writers[video_id] = None
                 return None
         return None
     
-    def _reset_video_state(self, video_id: str, timestamp: str, frame_number: int):
-        """Reset video state when video changes."""
-        if video_id != self.current_video_id:
-            # Close previous video writer if it exists
-            if self.current_video_id is not None:
-                self._close_video_writer(print_summary=True)
-            
-            # Reset for new video
-            self.current_video_id = video_id
-            self.video_fps = None
-            self.video_width = None
-            self.video_height = None
-            self.video_start_timestamp = timestamp  # Store first frame timestamp
-            self.last_frame_number = None
-            self.last_frame = None
+    def _initialize_video_state(self, video_id: str, timestamp: str, frame_number: int, fps: float, width: int, height: int):
+        """Initialize state for a new video (supports multiple videos in parallel)."""
+        # Initialize metadata for this video if not already present
+        if video_id not in self.video_metadata:
+            self.video_metadata[video_id] = {
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "filepath": None,
+                "start_timestamp": timestamp
+            }
+            self.video_frame_counts[video_id] = 0
+            self.video_last_frame_numbers[video_id] = None
+            self.video_last_frames[video_id] = None
             
             # Initialize stats for new video
             if video_id not in self.video_stats:
@@ -903,41 +1072,50 @@ class FireDetectionStream:
             width = message_value.get("width")
             height = message_value.get("height")
             
+            # Track maximum frame number seen per video (to estimate total frames for progress)
+            if video_id not in self.video_total_frames:
+                self.video_total_frames[video_id] = frame_number
+            else:
+                self.video_total_frames[video_id] = max(self.video_total_frames[video_id], frame_number)
+            
+            # Initialize video state if this is the first frame for this video
+            if video_id not in self.video_metadata:
+                self._initialize_video_state(video_id, timestamp, frame_number, fps, width, height)
+            
             # Check if video ended (large gap in frame numbers suggests video finished)
             # Note: Only close if gap is very large (>300 frames = ~10 seconds at 30fps)
             # This prevents premature closing due to processing delays or out-of-order frames
-            if self.current_video_id == video_id and self.last_frame_number is not None:
-                frame_gap = frame_number - self.last_frame_number
+            if video_id in self.video_last_frame_numbers and self.video_last_frame_numbers[video_id] is not None:
+                frame_gap = frame_number - self.video_last_frame_numbers[video_id]
                 # If gap is more than 300 frames (~10 seconds at 30fps), likely video ended
-                # This is much larger than the previous 30-frame threshold to avoid false positives
                 if frame_gap > 300:
                     print(f"⚠️  Detected large gap of {frame_gap} frames - closing video {video_id}")
-                    self._close_video_writer(print_summary=True)
-                    # Reset state for new video (or continuation)
-                    self._reset_video_state(video_id, timestamp, frame_number)
+                    self._close_video_writer(video_id, print_summary=True)
+                    # Re-initialize state for continuation or new video
+                    self._initialize_video_state(video_id, timestamp, frame_number, fps, width, height)
             
-            # Reset state if video changed
-            if video_id != self.current_video_id:
-                self._reset_video_state(video_id, timestamp, frame_number)
+            # Update last frame number for this video
+            self.video_last_frame_numbers[video_id] = frame_number
             
-            # Update last frame number
-            self.last_frame_number = frame_number
+            # Update metadata if not set
+            if video_id in self.video_metadata:
+                if self.video_metadata[video_id]["fps"] is None:
+                    self.video_metadata[video_id]["fps"] = fps
+                if self.video_metadata[video_id]["width"] is None and width:
+                    self.video_metadata[video_id]["width"] = width
+                if self.video_metadata[video_id]["height"] is None and height:
+                    self.video_metadata[video_id]["height"] = height
             
-            # Store video metadata and initialize writer if needed
-            if self.video_fps is None:
-                self.video_fps = fps
-            if self.video_width is None and width:
-                self.video_width = width
-            if self.video_height is None and height:
-                self.video_height = height
-            
-            # Initialize video writer if not already open (only once per video)
-            if self.video_writer is None and self.video_width and self.video_height:
-                self._initialize_video_writer(
-                    video_id,
-                    self.video_width, self.video_height, 
-                    self.video_fps
-                )
+            # Initialize video writer if not already open for this video
+            if video_id not in self.video_writers or self.video_writers[video_id] is None:
+                metadata = self.video_metadata.get(video_id, {})
+                if metadata.get("width") and metadata.get("height"):
+                    self._initialize_video_writer(
+                        video_id,
+                        metadata["width"],
+                        metadata["height"],
+                        metadata["fps"]
+                    )
             
             # Run inference to get heatmap (for fire-detect-nn)
             prediction = self.model.predict(frame)
@@ -960,19 +1138,46 @@ class FireDetectionStream:
             if heatmap is not None:
                 processed_frame = self._overlay_heatmap_on_frame(processed_frame, heatmap)
             
-            # Write frame directly to video file (incremental writing)
-            if self.video_writer is not None:
-                self.video_writer.write(processed_frame)
-                self.video_frame_count += 1
+            # Write frame directly to video file (incremental writing) - supports multiple videos in parallel
+            if video_id in self.video_writers and self.video_writers[video_id] is not None:
+                self.video_writers[video_id].write(processed_frame)
+                self.video_frame_counts[video_id] = self.video_frame_counts.get(video_id, 0) + 1
                 # Store last frame for final buffer flush
-                self.last_frame = processed_frame.copy()
+                self.video_last_frames[video_id] = processed_frame.copy()
+                
+                # Update progress file with per-video stream progress (every 10 frames to avoid too many writes)
+                # Also update on the last frame to ensure 100% is reached
+                frames_processed = self.video_frame_counts[video_id]
+                should_update = (frames_processed % 10 == 0)
+                
+                # Check if this might be the last frame (if we've processed all frames the producer sent)
+                if not should_update:
+                    try:
+                        import json
+                        with open(self.progress_file, 'r') as f:
+                            progress_data = json.load(f)
+                        for v in progress_data.get("videos", []):
+                            if v.get("video_id") == video_id:
+                                total_frames = v.get("total_frames", 0)
+                                producer_prog = v.get("producer_progress", 0)
+                                # If producer is at 100% and we're close to total_frames, update progress
+                                if producer_prog >= 99 and total_frames > 0 and frames_processed >= total_frames - 1:
+                                    should_update = True
+                                break
+                    except:
+                        pass
+                
+                if should_update:
+                    self._update_stream_progress(video_id)
                 
                 # Periodically check if writer is still working (every 100 frames)
                 # This helps catch issues early and ensures frames are being written
-                if self.video_frame_count % 100 == 0:
+                if self.video_frame_counts[video_id] % 100 == 0:
                     # Verify file is growing (basic sanity check)
-                    if self.video_filepath and os.path.exists(self.video_filepath):
-                        current_size = os.path.getsize(self.video_filepath)
+                    metadata = self.video_metadata.get(video_id, {})
+                    filepath = metadata.get("filepath")
+                    if filepath and os.path.exists(filepath):
+                        current_size = os.path.getsize(filepath)
                         # If file hasn't grown in a while, there might be an issue
                         # (but don't spam logs - just verify it's working)
                         pass
@@ -1003,13 +1208,15 @@ class FireDetectionStream:
             return None
     
     def _cleanup(self):
-        """Cleanup resources and finalize video."""
-        print("\n🛑 Cleaning up and finalizing video...")
-        if self.video_writer is not None:
-            try:
-                self._close_video_writer(print_summary=True)
-            except Exception as e:
-                print(f"Error during cleanup: {e}")
+        """Cleanup resources and finalize all videos."""
+        print("\n🛑 Cleaning up and finalizing all videos...")
+        # Close all video writers
+        for video_id in list(self.video_writers.keys()):
+            if self.video_writers[video_id] is not None:
+                try:
+                    self._close_video_writer(video_id, print_summary=True)
+                except Exception as e:
+                    print(f"Error closing video {video_id} during cleanup: {e}")
     
     def run(self):
         """Run the stream processor."""
@@ -1072,9 +1279,11 @@ class FireDetectionStream:
                         future.add_callback(on_send_success)
                         future.add_errback(on_send_error)
                     
-                    # Commit offset after processing each message (manual commit)
+                    # Commit offset after processing messages (manual commit)
                     # This ensures we don't lose progress if the consumer stops
-                    if message_count % 100 == 0:  # Commit every 100 messages to reduce overhead
+                    # Reduced commit frequency from 100 to 250 to improve throughput
+                    # Trade-off: Up to 250 messages may be reprocessed on crash (acceptable for idempotent processing)
+                    if message_count % 250 == 0:  # Commit every 250 messages (increased from 100 to reduce overhead)
                         try:
                             self.consumer.commit()
                         except Exception as e:
@@ -1088,11 +1297,13 @@ class FireDetectionStream:
             except:
                 pass
             
-            # If we exit the loop (timeout or end of messages), close current video
-            if self.video_writer is not None:
+            # If we exit the loop (timeout or end of messages), close all videos
+            active_videos = [vid for vid, writer in self.video_writers.items() if writer is not None]
+            if active_videos:
                 print(f"\n⚠️  Consumer loop exited - processed {message_count} messages total")
-                print("  Closing current video...")
-                self._close_video_writer(print_summary=True)
+                print(f"  Closing {len(active_videos)} active video(s)...")
+                for video_id in active_videos:
+                    self._close_video_writer(video_id, print_summary=True)
         
         except KeyboardInterrupt:
             print(f"\n\nStopping stream processor...")
@@ -1105,11 +1316,12 @@ class FireDetectionStream:
             traceback.print_exc()
         finally:
             # Ensure cleanup happens even if something goes wrong
-            if self.video_writer is not None:
-                try:
-                    self._close_video_writer(print_summary=False)
-                except:
-                    pass
+            for video_id in list(self.video_writers.keys()):
+                if self.video_writers[video_id] is not None:
+                    try:
+                        self._close_video_writer(video_id, print_summary=False)
+                    except:
+                        pass
             self.consumer.close()
             self.producer.flush()
             self.producer.close()

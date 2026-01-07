@@ -36,6 +36,9 @@ pytest -v
 - `test_fire_detection_stream.py` - FireDetectionStream class tests
 - `test_s3_upload_consumer.py` - S3UploadConsumer class tests
 - `test_model_loading.py` - Model loading tests
+- `test_single_video_processing.py` - Single video file processing tests
+- `test_parallel_video_processing.py` - Parallel video processing tests
+- `test_video_finalization_concurrency.py` - Video finalization concurrency tests (marked as slow)
 - `conftest.py` - Pytest fixtures and configuration
 
 ## Test Coverage
@@ -47,6 +50,25 @@ Current test coverage includes:
 - ✅ S3VideoUploader (upload logic, error handling)
 - ✅ S3VideoConsumer (message processing)
 - ✅ Model loading (fire-detect-nn and YOLOv8)
+- ✅ Single video file processing (path validation, progress tracking)
+- ✅ Parallel video processing (concurrent execution, thread safety)
+
+## Running Fast vs Slow Tests
+
+### Run only fast unit tests (recommended for quick checks):
+```bash
+pytest -m "not slow"
+```
+
+### Run all tests including slow concurrency tests:
+```bash
+pytest
+```
+
+### Run only slow tests:
+```bash
+pytest -m slow
+```
 
 ## Writing New Tests
 
