@@ -9,32 +9,54 @@ from producer.video_producer import VideoProducer
 
 class TestVideoProducer:
     """Tests for VideoProducer class."""
-    
+
     @pytest.fixture
     def producer(self, mock_kafka_producer):
-        """Create a VideoProducer instance with mocked Kafka."""
+        """Create a VideoProducer instance with mocked Kafka (msgpack default)."""
         with patch('producer.video_producer.KafkaProducer', return_value=mock_kafka_producer):
             prod = VideoProducer(bootstrap_servers="localhost:9092")
             prod.producer = mock_kafka_producer
             return prod
-    
-    def test_encode_frame(self, producer, sample_frame):
-        """Test frame encoding to base64."""
-        # Encode frame as JPEG
+
+    @pytest.fixture
+    def base64_producer(self, mock_kafka_producer):
+        """Create a VideoProducer pinned to the legacy base64-json transport."""
+        with patch('producer.video_producer.KafkaProducer', return_value=mock_kafka_producer), \
+             patch('producer.video_producer.config') as mock_config:
+            mock_config.KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
+            mock_config.KAFKA_VIDEO_TOPIC = "video-frames"
+            mock_config.FRAME_TRANSPORT = "base64-json"
+            prod = VideoProducer(bootstrap_servers="localhost:9092")
+            prod.producer = mock_kafka_producer
+            return prod
+
+    def test_encode_frame_msgpack_passthrough(self, producer, sample_frame):
+        """Default transport is msgpack — encode_frame is a no-op on bytes."""
         _, buffer = cv2.imencode('.jpg', sample_frame)
         frame_bytes = buffer.tobytes()
-        
+
         encoded = producer.encode_frame(frame_bytes)
-        
-        # Verify it's valid base64
-        decoded = base64.b64decode(encoded)
-        assert decoded == frame_bytes
+
+        assert encoded is frame_bytes
+        assert isinstance(encoded, bytes)
+
+    def test_encode_frame_base64(self, base64_producer, sample_frame):
+        """Legacy transport returns a base64 string round-trippable to the input."""
+        _, buffer = cv2.imencode('.jpg', sample_frame)
+        frame_bytes = buffer.tobytes()
+
+        encoded = base64_producer.encode_frame(frame_bytes)
+
         assert isinstance(encoded, str)
-    
-    def test_encode_frame_empty(self, producer):
-        """Test encoding empty frame."""
-        encoded = producer.encode_frame(b"")
-        assert encoded == ""
+        assert base64.b64decode(encoded) == frame_bytes
+
+    def test_encode_frame_empty_msgpack(self, producer):
+        """Empty bytes pass through as empty bytes under msgpack."""
+        assert producer.encode_frame(b"") == b""
+
+    def test_encode_frame_empty_base64(self, base64_producer):
+        """Empty bytes encode to the empty base64 string under legacy."""
+        assert base64_producer.encode_frame(b"") == ""
     
     @patch('cv2.VideoCapture')
     def test_process_video_file_success(self, mock_video_capture, producer, sample_frame):
@@ -153,13 +175,15 @@ class TestVideoProducer:
             "height": sample_frame.shape[0]
         }
         
-        # Verify all required fields
+        # Verify all required fields. Under msgpack transport, frame_data is
+        # raw bytes; under base64-json it would be a str. Either is acceptable
+        # — the stream-side decode_frame handles both.
         assert "video_id" in message
         assert "frame_number" in message
         assert "timestamp" in message
         assert "fps" in message
         assert "frame_data" in message
+        assert isinstance(message["frame_data"], (bytes, str))
         assert "width" in message
         assert "height" in message
-        assert isinstance(message["frame_data"], str)  # Base64 string
 

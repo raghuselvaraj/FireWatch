@@ -70,6 +70,9 @@ class TestParallelVideoProcessing(unittest.TestCase):
                     mock_config.FRAME_EXTRACTION_INTERVAL = 1
                     mock_config.FRAME_WIDTH = None
                     mock_config.FRAME_HEIGHT = None
+                    mock_config.KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
+                    mock_config.KAFKA_VIDEO_TOPIC = "video-frames"
+                    mock_config.FRAME_TRANSPORT = "msgpack"
                     
                     producer = VideoProducer()
                     
@@ -200,7 +203,10 @@ class TestVideoProducerIntegration(unittest.TestCase):
             mock_config.FRAME_EXTRACTION_INTERVAL = 1
             mock_config.FRAME_WIDTH = None
             mock_config.FRAME_HEIGHT = None
-            
+            mock_config.KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
+            mock_config.KAFKA_VIDEO_TOPIC = "video-frames"
+            mock_config.FRAME_TRANSPORT = "msgpack"
+
             producer = VideoProducer()
             start = time.time()
             producer.process_video_file('/fake/path.mp4', 'test_video')

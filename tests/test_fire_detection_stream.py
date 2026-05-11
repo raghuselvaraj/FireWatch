@@ -243,6 +243,7 @@ class TestFireDetectionModelDispatcher:
         mock_config.ML_MODEL_NAME = "ignored"
         mock_config.CONFIDENCE_THRESHOLD = 0.5
         mock_config.IOU_THRESHOLD = 0.45
+        mock_config.GRADCAM_EVERY_N_FIRE_FRAMES = 1
 
         with patch("streams.models.fire_detect_nn.FireDetectNN._load",
                    return_value=(Mock(), Mock(), Mock())):

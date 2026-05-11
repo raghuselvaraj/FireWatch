@@ -55,7 +55,10 @@ class FireDetectionModel:
         if self.use_fire_detect_nn:
             from streams.models.fire_detect_nn import FireDetectNN
 
-            self._backend = FireDetectNN(confidence_threshold=self.confidence_threshold)
+            self._backend = FireDetectNN(
+                confidence_threshold=self.confidence_threshold,
+                gradcam_every_n_fire_frames=getattr(config, "GRADCAM_EVERY_N_FIRE_FRAMES", 1),
+            )
             self.model = self._backend.model
             self.device = self._backend.device
             self.fire_transform = self._backend.fire_transform

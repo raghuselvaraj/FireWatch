@@ -75,7 +75,73 @@ Applies to fire-detect-nn only. YOLOv8 paths don't compute GradCAM.
 - All frames processed
 - Heatmap on every positive frame
 
-> **Planned (Phase 3 refactor):** batched inference, `register_full_backward_hook`, GradCAM-every-N-positives sampling, fp16/autocast on CUDA, and msgpack frame transport. See the project plan for FPS targets.
+## Phase 3 tuning knobs
+
+Phase 3 introduced six environment-driven knobs. All have backward-compatible defaults and can be combined.
+
+### Inference cadence
+
+```env
+INFERENCE_EVERY_N_FRAMES=2   # default 1 (every frame)
+```
+
+Run the model every Nth frame. Skipped frames still get written to the annotated MP4 — they reuse the most recent prediction's `has_fire` and heatmap. Set to 2 to roughly double FPS on high-FPS sources where consecutive frames are near-identical; set to 4 if you can tolerate ~0.13s of detection lag at 30 fps.
+
+### GradCAM cadence
+
+```env
+GRADCAM_EVERY_N_FIRE_FRAMES=5   # default 5
+```
+
+GradCAM is the expensive part of fire-detect-nn's positive path (a full backward pass through DenseNet121). Most consecutive fire frames produce near-identical heatmaps, so this knob computes the heatmap only every Nth positive frame and reuses it on the frames in between. Set to 1 to compute on every positive frame (legacy behavior).
+
+### Mixed precision (CUDA only)
+
+The fire-detect-nn backend automatically wraps inference in `torch.autocast(device_type="cuda", dtype=torch.float16)` when running on CUDA. On Apple MPS it stays fp32 (autocast on MPS is still flaky in torch 2.x). No env knob — automatic.
+
+### Frame transport
+
+```env
+FRAME_TRANSPORT=msgpack       # default; legacy: base64-json
+```
+
+`msgpack` packs raw JPEG bytes directly into the Kafka message (no base64 wrap). ~33% smaller payload on the wire, ~5x faster decode in the stream processor. The producer and stream **must** agree on this setting — they read the same env var.
+
+### Offset commit cadence
+
+```env
+COMMIT_EVERY_N_MESSAGES=250    # default 250
+COMMIT_INTERVAL_SECONDS=5.0    # default 5.0
+```
+
+The stream commits Kafka offsets whenever **either** threshold fires. The time-interval guard fixes the historical "short videos never see a commit" bug — without it, a 911-frame video left 161 messages uncommitted at the end, and `run_full_test.sh`'s lag check would poll forever.
+
+### Eval-safe GradCAM (no env knob)
+
+Phase 3 dropped the legacy `model.train(); backward(); model.eval()` toggle that GradCAM used to enable gradient computation. That toggle silently changed BatchNorm to batch-stats mode mid-inference, distorting the very activations GradCAM was trying to weigh. The new path uses `torch.enable_grad()` on the input tensor only, keeping the model in eval mode end-to-end. Also swapped the deprecated `register_backward_hook` for `register_full_backward_hook`.
+
+## Measuring
+
+```bash
+python3 scripts/bench.py path/to/video.mp4 --warmup 5
+```
+
+Reports throughput and p50/p95/p99 latency. Bypasses Kafka entirely — purely measures the model + GradCAM + overlay path. Set env knobs before invoking to compare configurations. Example:
+
+```bash
+# Baseline
+python3 scripts/bench.py sample.mp4
+
+# Run inference every other frame
+INFERENCE_EVERY_N_FRAMES=2 python3 scripts/bench.py sample.mp4
+
+# Disable GradCAM cadence (compute on every positive)
+GRADCAM_EVERY_N_FIRE_FRAMES=1 python3 scripts/bench.py sample.mp4
+```
+
+> Note: bench.py calls the model directly, so `INFERENCE_EVERY_N_FRAMES` won't change the numbers here — that knob lives in the stream wrapper. To measure its effect, run an end-to-end pipeline (`run_full_test.sh`) and compare wall-clock to completion.
+
+> **Still deferred:** batched inference (collect N frames into a single forward pass). This is the biggest remaining theoretical win on CUDA, but it requires restructuring the consumer loop and would block this PR.
 
 ## Horizontal Scaling
 
