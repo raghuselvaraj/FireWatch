@@ -85,15 +85,23 @@ def cmd_messages(args: argparse.Namespace) -> int:
     print("Press Ctrl+C to stop.\n")
 
     consumer = KafkaConsumer(
-        args.topic,
         bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         key_deserializer=lambda k: k.decode("utf-8") if k else None,
         group_id=f"inspect-messages-{uuid.uuid4().hex[:8]}",
         auto_offset_reset="earliest",
         enable_auto_commit=False,
-        consumer_timeout_ms=2000,
+        # 10s gives time for the rebalance + first fetch before the iterator
+        # decides the topic is empty.
+        consumer_timeout_ms=10000,
     )
+    consumer.subscribe([args.topic])
+    # Drive at least one poll so partitions get assigned before we iterate.
+    consumer.poll(timeout_ms=5000)
+    partitions = consumer.assignment()
+    if partitions:
+        consumer.seek_to_beginning(*partitions)
+
     try:
         count = 0
         for message in consumer:
@@ -128,19 +136,23 @@ def cmd_detections(args: argparse.Namespace) -> int:
         group_id=group_id,
         auto_offset_reset="earliest",
         enable_auto_commit=False,
-        consumer_timeout_ms=5000,
+        # 10s gives time for the rebalance + first fetch before the iterator
+        # decides the topic is empty.
+        consumer_timeout_ms=10000,
     )
     consumer.subscribe([config.KAFKA_DETECTIONS_TOPIC])
-    consumer.poll(timeout_ms=2000)
-    partitions = consumer.assignment()
-
-    if not partitions:
-        time.sleep(2)
+    # Drive polls until partitions are assigned (rebalance can take several seconds
+    # on the first connection to a new broker).
+    for _ in range(5):
+        consumer.poll(timeout_ms=2000)
         partitions = consumer.assignment()
-        if not partitions:
-            print("⚠️  No partitions found; topic may be empty.")
-            consumer.close()
-            return 0
+        if partitions:
+            break
+        time.sleep(1)
+    else:
+        print("⚠️  No partitions assigned after 15s; topic may be empty.")
+        consumer.close()
+        return 0
 
     if args.new_only:
         consumer.seek_to_end(*partitions)
