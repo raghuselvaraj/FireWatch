@@ -27,11 +27,8 @@ ML_MODEL_TYPE = os.getenv("ML_MODEL_TYPE", "fire-detect-nn")  # 'ultralytics' or
 ML_MODEL_PATH = os.getenv("ML_MODEL_PATH", "models/fire_detection_model.pt")
 ML_MODEL_SOURCE = os.getenv("ML_MODEL_SOURCE", "fire-detect-nn")  # 'huggingface', 'local', 'roboflow', 'fire-detect-nn', or 'download'
 ML_MODEL_NAME = os.getenv("ML_MODEL_NAME", "touatikamel/yolov8s-forest-fire-detection")  # Only used if ML_MODEL_TYPE=ultralytics
-# Fire-Detect-NN Configuration (from https://github.com/tomasz-lewicki/fire-detect-nn)
-FIRE_DETECT_NN_DIR = os.getenv("FIRE_DETECT_NN_DIR", "fire-detect-nn")  # Directory where repo is cloned
-FIRE_DETECT_NN_WEIGHTS = os.getenv("FIRE_DETECT_NN_WEIGHTS", "fire-detect-nn/weights/firedetect-densenet121-pretrained.pt")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.5"))  # For fire-detect-nn (binary classification probability)
-IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))  # Intersection over Union threshold (not used for classification models)
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.5"))  # Binary probability threshold (fire-detect-nn) or YOLOv8 confidence
+IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))  # NMS IoU threshold (YOLOv8 only; ignored for fire-detect-nn)
 
 # Video Output Configuration
 CLIP_STORAGE_PATH = os.getenv("CLIP_STORAGE_PATH", "clips")  # Output directory for annotated videos
@@ -43,5 +40,3 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET = os.getenv("S3_BUCKET", "")
 S3_DELETE_LOCAL_AFTER_UPLOAD = os.getenv("S3_DELETE_LOCAL_AFTER_UPLOAD", "true").lower() == "true"  # Delete local files after S3 upload
-
-# Note: Snowflake and Iceberg configurations removed - system now uses S3 for storage

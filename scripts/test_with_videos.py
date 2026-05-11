@@ -1,14 +1,15 @@
 """
-Test script to process test videos through the FireWatch pipeline.
+Run one or more videos through the FireWatch pipeline.
 
-This script processes all videos in the test_files directory and sends them
-through the pipeline for fire detection.
+Each video is sent to Kafka in parallel (separate keys → separate partitions),
+so multiple stream-processor instances can consume them concurrently.
 
 Usage:
-    python3 scripts/test_with_videos.py [video_path]
-    
-    If video_path is provided, only that video will be processed.
-    If not provided, processes all videos in test_files/ directory.
+    python3 scripts/test_with_videos.py path/to/video.mp4 [more.mp4 ...]
+
+A shared progress file (default: /tmp/firewatch_video_progress.json) is updated
+as frames are sent; `scripts/run_full_test.sh` reads it to render a dashboard.
+Override the path with the PROGRESS_FILE env var.
 """
 import os
 import sys
@@ -28,45 +29,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from producer.video_producer import VideoProducer
 import config
-
-
-def find_test_videos(base_path: str = "test_files", video_name: str = None) -> list:
-    """Find all video files in the test_files directory, or a specific video if specified."""
-    video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv']
-    videos = []
-    
-    base = Path(base_path)
-    if not base.exists():
-        print(f"Test files directory not found: {base_path}")
-        return videos
-    
-    # If specific video name is provided, only find that video
-    if video_name:
-        # Try exact match first (with and without extension)
-        for ext in video_extensions:
-            # Exact filename match
-            exact_match = base.rglob(f"{video_name}{ext}")
-            videos.extend(exact_match)
-            # Pattern match as fallback
-            pattern_match = base.rglob(f"*{video_name}*{ext}")
-            videos.extend(pattern_match)
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_videos = []
-        for v in videos:
-            if v not in seen:
-                seen.add(v)
-                unique_videos.append(v)
-        if unique_videos:
-            return sorted(unique_videos)
-        else:
-            print(f"⚠️  Video '{video_name}' not found, searching for all videos...")
-    
-    # Otherwise find all videos
-    for ext in video_extensions:
-        videos.extend(base.rglob(f"*{ext}"))
-    
-    return sorted(videos)
 
 
 def test_video(video_path: Path, video_id: str = None, progress_callback=None, status_dict=None, status_lock=None, progress_file=None):
@@ -285,55 +247,21 @@ def main():
         sys.exit(1)
     
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Process videos through FireWatch pipeline')
-    parser.add_argument('video', nargs='?', help='Path to a specific video file to process (optional)')
+    parser = argparse.ArgumentParser(description='Process one or more videos through the FireWatch pipeline.')
+    parser.add_argument('videos', nargs='+', help='One or more paths to video files.')
     args = parser.parse_args()
-    
-    # Find test videos
-    print("\n2. Finding test videos...")
+
+    # Validate paths
+    print("\n2. Resolving video paths...")
     videos = []
-    
-    if args.video:
-        # User provided a specific video path
-        video_path = Path(args.video)
-        if video_path.exists() and video_path.is_file():
-            print(f"   Processing specified video: {video_path}")
-            videos = [video_path]
-        else:
+    for path_str in args.videos:
+        video_path = Path(path_str)
+        if not video_path.exists() or not video_path.is_file():
             print(f"✗ Video file not found: {video_path}")
             sys.exit(1)
-    else:
-        # If multiple stream instances are being used, process multiple videos
-        # Otherwise, process single default video
-        stream_instances = int(os.getenv("STREAM_INSTANCES", "1"))
-        if stream_instances > 1:
-            # Process multiple videos to utilize all stream instances
-            print(f"   Processing multiple videos (to utilize {stream_instances} stream instances)...")
-            videos = find_test_videos()  # Find all videos
-            # Limit to reasonable number (e.g., 3-6 videos max)
-            if len(videos) > stream_instances:
-                videos = videos[:stream_instances]
-            print(f"   Selected {len(videos)} video(s) for parallel processing")
-        else:
-            # Single instance - process default video
-            video_name = os.getenv("TEST_VIDEO_NAME", "fire-short-3")
-            print(f"   Looking for video: {video_name}")
-            videos = find_test_videos(video_name=video_name)
-        
-        if not videos:
-            print("✗ No test videos found in test_files/ directory")
-            print("\nExpected structure:")
-            print("  test_files/")
-            print("    trail_cams/")
-            print("      actual_fires/")
-            print("        fire_test_1.mp4")
-            print("      no_fires/")
-            print("        no_fire_test_1.mp4")
-            print("\nOr provide a video path as an argument:")
-            print("  python3 scripts/test_with_videos.py /path/to/video.mp4")
-            sys.exit(1)
-    
-    print(f"✓ Found {len(videos)} test video(s)")
+        videos.append(video_path)
+
+    print(f"✓ {len(videos)} video(s) queued:")
     for video in videos:
         print(f"  - {video}")
     

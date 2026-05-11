@@ -27,7 +27,7 @@ Video Files → Kafka Producer → Kafka Topic (video-frames)
 - **Partitioned Processing**: Kafka topics are partitioned for parallel processing
 - **20-30 FPS**: Designed to process 20-30 frames per second per consumer
 
-For detailed architecture diagrams, see [docs/ARCHITECTURE_DIAGRAM.md](docs/ARCHITECTURE_DIAGRAM.md).
+For detailed architecture diagrams, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 For scaling guide, see [docs/SCALING.md](docs/SCALING.md).
 
@@ -46,14 +46,6 @@ For scaling guide, see [docs/SCALING.md](docs/SCALING.md).
 - **Generates full annotated videos with heatmap overlays on fire detections**
 - Publishes detection results to `fire-detections` topic
 - Publishes video completion events to `video-completions` topic
-
-The stream processor:
-- Consume frames from `video-frames` topic
-- Run ML model inference on each frame
-- Detect forest fires in real-time
-- **Generate full annotated videos with heatmap overlays on fire detections**
-- Publish detection results to `fire-detections` topic
-- Publish video completion events to `video-completions` topic
 
 ### 3. S3 Upload Consumer (`consumer/s3_video_consumer.py`)
 - Consumes video completion events from `video-completions` topic
@@ -108,7 +100,7 @@ pip install -e .
 pytest
 ```
 
-4. Configure environment variables:
+5. Configure environment variables:
 ```bash
 cp .env.example .env
 # Edit .env with your Kafka and AWS credentials (for S3)
@@ -127,8 +119,6 @@ KAFKA_DETECTIONS_TOPIC=fire-detections
 # ML Model Configuration (fire-detect-nn is default)
 ML_MODEL_TYPE=fire-detect-nn  # 'fire-detect-nn' (default) or 'ultralytics' (YOLOv8)
 ML_MODEL_SOURCE=fire-detect-nn
-FIRE_DETECT_NN_DIR=fire-detect-nn
-FIRE_DETECT_NN_WEIGHTS=fire-detect-nn/weights/firedetect-densenet121-pretrained.pt
 CONFIDENCE_THRESHOLD=0.5  # Binary classification probability threshold (0.0-1.0)
 
 # Alternative: YOLOv8 Configuration (if using ultralytics instead)
@@ -159,10 +149,10 @@ KAFKA_DETECTIONS_TOPIC_PARTITIONS=6
 After installing dependencies, download the forest fire detection model:
 
 ```bash
-python3 scripts/setup_fire_detect_nn.py
+python3 scripts/install_fire_detect_nn.py
 ```
 
-This will clone the fire-detect-nn repository and download the pre-trained DenseNet121 weights.
+This clones the fire-detect-nn repository into your active Python environment's `site-packages` and downloads the pre-trained DenseNet121 weights.
 
 ## Usage
 
@@ -205,17 +195,17 @@ bin/kafka-server-start.sh config/server.properties
 **Option A: Run all components together (recommended for testing)**
 
 ```bash
-./scripts/run_full_test.sh
+./scripts/run_full_test.sh path/to/your/video.mp4 [more_videos.mp4 ...]
 ```
 
 This script automatically:
-- Starts Kafka (if not running)
-- Creates topics
-- Starts the fire detection stream
-- Processes all videos in `test_files/`
-- Shows real-time status
+- Verifies Kafka is reachable (start it with `docker-compose up -d` first)
+- Starts the fire detection stream processor (`--instances N` for multiple)
+- Starts the S3 upload consumer (if `S3_BUCKET` is set in `.env`)
+- Runs the producer against the videos you passed on the command line
+- Streams a live per-video progress dashboard
 
-Or process a specific video:
+Or process a specific video manually:
 ```bash
 python3 producer/video_producer.py path/to/your/video.mp4 video_id_123
 ```
@@ -235,7 +225,7 @@ python3 consumer/s3_video_consumer.py
 python3 producer/video_producer.py path/to/your/video.mp4 video_id_123
 
 # Terminal 4: View Detection Results
-python3 scripts/view_detections.py
+python3 scripts/kafka_inspect.py detections
 ```
 
 ## ML Model Integration
@@ -280,20 +270,17 @@ The system also supports YOLOv8 models as an alternative. To use YOLOv8 instead 
 
 **Note:** fire-detect-nn is recommended as it provides GradCAM heatmaps and is specifically trained for fire detection.
 
-See `docs/MODEL_SETUP.md` for detailed configuration.
-
-For fire-detect-nn setup, see `docs/FIRE_DETECT_NN_SETUP.md`.
+See [docs/MODELS.md](docs/MODELS.md) for detailed configuration of both fire-detect-nn and YOLOv8 backends.
 
 ## Documentation
 
-- [docs/ARCHITECTURE_DIAGRAM.md](docs/ARCHITECTURE_DIAGRAM.md) - System architecture diagrams
-- [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md) - Local testing with Docker Compose
-- [docs/TESTING.md](docs/TESTING.md) - Testing guide
-- [docs/SCALING.md](docs/SCALING.md) - Horizontal scaling guide
-- [docs/MODEL_SETUP.md](docs/MODEL_SETUP.md) - ML model setup
-- [docs/FIRE_DETECT_NN_SETUP.md](docs/FIRE_DETECT_NN_SETUP.md) - fire-detect-nn setup details
-- [infrastructure/docs/COST_OPTIMIZATION.md](infrastructure/docs/COST_OPTIMIZATION.md) - Cost optimization and MSK trade-offs
-- [infrastructure/docs/MSK_SERVERLESS.md](infrastructure/docs/MSK_SERVERLESS.md) - MSK Serverless technical guide
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System components, data flow, deployment diagrams
+- [docs/MODELS.md](docs/MODELS.md) — Available models (fire-detect-nn, YOLOv8) and how to swap them
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — Local stack, running each component, pytest, debugging
+- [docs/SCALING.md](docs/SCALING.md) — Horizontal scaling guide
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — Throughput tuning, current optimizations, bottlenecks
+- [infrastructure/docs/COST_OPTIMIZATION.md](infrastructure/docs/COST_OPTIMIZATION.md) — Cost optimization and MSK trade-offs
+- [infrastructure/docs/MSK_SERVERLESS.md](infrastructure/docs/MSK_SERVERLESS.md) — MSK Serverless technical guide
 
 ## Project Structure
 
@@ -304,49 +291,51 @@ FireWatch/
 │   └── video_producer.py          # Kafka producer for video frames
 ├── streams/
 │   ├── __init__.py
-│   ├── fire_detection_stream.py   # Stream processor for ML inference
+│   └── fire_detection_stream.py   # Stream processor for ML inference
 ├── consumer/
 │   ├── __init__.py
-│   └── s3_video_consumer.py      # S3 upload consumer
+│   └── s3_video_consumer.py       # S3 upload consumer
 ├── scripts/
 │   ├── install_fire_detect_nn.py  # Install fire-detect-nn to site-packages
 │   ├── setup_kafka_topics.sh      # Create Kafka topics with partitions
-│   ├── run_full_test.sh           # Complete test script with monitoring
-│   ├── test_model_directly.py     # Test ML model directly
-│   ├── test_with_videos.py        # Test script to process videos
-│   ├── view_detections.py         # View detection results from Kafka
-│   ├── view_kafka_messages.py     # View raw Kafka messages
-│   ├── check_kafka_status.py      # Check Kafka topic status
-│   ├── clear_kafka_topics.sh      # Clear Kafka topics
-│   └── reset_consumer_offsets.sh  # Reset consumer group offsets
+│   ├── run_full_test.sh           # End-to-end pipeline runner (videos as args)
+│   ├── test_with_videos.py        # Producer driver: one or more videos in parallel
+│   ├── kafka_inspect.py           # status | messages | detections (Kafka inspector)
+│   ├── clear_kafka_topics.sh      # Clear all Kafka topics
+│   ├── reset_consumer_offsets.sh  # Reset consumer group offsets
+│   ├── run_tests.sh               # Pytest entry point used by CI
+│   └── stop_all.sh                # Kill leftover Python + docker-compose processes
 ├── docs/
-│   ├── ARCHITECTURE_DIAGRAM.md    # Architecture diagrams
-│   ├── MODEL_SETUP.md             # Model setup guide
+│   ├── ARCHITECTURE.md            # Components, data flow, AWS topology
+│   ├── MODELS.md                  # fire-detect-nn + YOLOv8 setup and tuning
+│   ├── DEVELOPMENT.md             # Local stack, pytest, debugging
 │   ├── SCALING.md                 # Horizontal scaling guide
-│   ├── FIRE_DETECT_NN_SETUP.md    # fire-detect-nn setup guide
-│   └── TESTING.md                 # Testing guide
-├── tests/                         # Unit tests
+│   └── PERFORMANCE.md             # Throughput tuning and bottlenecks
+├── tests/                         # Pytest suite
 │   ├── __init__.py
-│   ├── conftest.py                # Pytest fixtures
+│   ├── conftest.py                # Shared fixtures (mock Kafka, sample frames)
 │   ├── README.md                  # Test documentation
-│   ├── test_utils.py              # Utility function tests
-│   ├── test_video_producer.py     # Video producer tests
-│   ├── test_fire_detection_stream.py  # Stream processor tests
-│   ├── test_s3_upload_consumer.py # S3 consumer tests
-│   └── test_model_loading.py     # Model loading tests
+│   ├── test_utils.py
+│   ├── test_video_producer.py
+│   ├── test_fire_detection_stream.py
+│   ├── test_s3_upload_consumer.py
+│   ├── test_model_loading.py
+│   ├── test_single_video_processing.py
+│   ├── test_parallel_video_processing.py
+│   └── test_video_finalization_concurrency.py
 ├── config.py                      # Configuration management
 ├── setup.py                       # Package setup (installs fire-detect-nn)
-├── requirements.txt                # Python dependencies
+├── requirements.txt               # Python dependencies
 ├── pytest.ini                     # Pytest configuration
-├── docker-compose.yml             # Docker setup for Kafka
-├── .env.example                    # Environment variables template
-├── README.md                       # This file
-└── infrastructure/                 # AWS CDK infrastructure
-    ├── lib/                        # CDK construct definitions
-    ├── bin/                        # CDK app entry point
-    ├── Dockerfile.*                # Dockerfiles for services
-    ├── README.md                   # Infrastructure overview
-    └── DEPLOYMENT.md               # Detailed deployment guide
+├── docker-compose.yml             # Local Kafka stack
+├── .env.example                   # Environment variables template
+├── README.md                      # This file
+└── infrastructure/                # AWS CDK infrastructure
+    ├── lib/                       # CDK construct definitions
+    ├── bin/                       # CDK app entry point
+    ├── Dockerfile.*               # Dockerfiles for services
+    ├── README.md                  # Infrastructure overview
+    └── DEPLOYMENT.md              # Detailed deployment guide
 ```
 
 ## Features

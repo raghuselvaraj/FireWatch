@@ -57,21 +57,25 @@ future.add_errback(on_send_error)
 
 **Impact**: Better throughput with larger batches, lower latency.
 
-### 4. GradCAM Always Enabled ✅
+### 4. GradCAM on Positive Frames Only ✅
 
-**Note**: GradCAM heatmaps are a core feature and always computed for every fire detection. This ensures all output videos have proper heatmap overlays.
+GradCAM heatmaps are computed only for frames the classifier flags as fire (probability ≥ `CONFIDENCE_THRESHOLD`). Negative frames skip the expensive backward pass. If GradCAM fails (hook not registered, OOM, etc.) the frame is still written to the output video — just without the heatmap overlay.
+
+Applies to fire-detect-nn only. YOLOv8 paths don't compute GradCAM.
 
 ## Performance Characteristics
 
 **Default Configuration:**
 - Processes all frames
-- Computes GradCAM heatmap for every fire detection
+- Computes GradCAM heatmap for every positive (fire) detection
 - ~20-30 frames/second per processor
 
 **With Optimizations (Async Kafka, Better Config):**
 - ~30-40 frames/second per processor
 - All frames processed
-- Heatmap for every fire detection
+- Heatmap on every positive frame
+
+> **Planned (Phase 3 refactor):** batched inference, `register_full_backward_hook`, GradCAM-every-N-positives sampling, fp16/autocast on CUDA, and msgpack frame transport. See the project plan for FPS targets.
 
 ## Horizontal Scaling
 
