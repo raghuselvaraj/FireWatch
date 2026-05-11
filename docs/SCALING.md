@@ -67,13 +67,13 @@ Each stream processor instance will automatically consume from different partiti
 
 ```bash
 # Terminal 1
-python3 streams/fire_detection_stream.py
+python3 -m streams
 
 # Terminal 2
-python3 streams/fire_detection_stream.py
+python3 -m streams
 
 # Terminal 3
-python3 streams/fire_detection_stream.py
+python3 -m streams
 
 # ... up to N instances (where N = number of partitions)
 ```

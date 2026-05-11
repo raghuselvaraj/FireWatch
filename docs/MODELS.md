@@ -106,7 +106,7 @@ If you're getting too many false positives or missing real fires, change `CONFID
 For repeatable comparison, run the same clip with several thresholds and inspect the published detections:
 
 ```bash
-CONFIDENCE_THRESHOLD=0.3 python3 streams/fire_detection_stream.py &
+CONFIDENCE_THRESHOLD=0.3 python3 -m streams &
 python3 scripts/test_with_videos.py path/to/known_fire.mp4
 python3 scripts/kafka_inspect.py detections --limit 50
 ```

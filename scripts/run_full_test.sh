@@ -229,7 +229,7 @@ echo ""
 
 # Kill any existing stream processor instances from previous runs
 echo "Cleaning up any existing stream processor instances..."
-pkill -f "fire_detection_stream.py" 2>/dev/null && sleep 2 || true
+pkill -f "python.* -m streams" 2>/dev/null && sleep 2 || true
 pkill -f "test_with_videos.py" 2>/dev/null && sleep 1 || true
 pkill -f "s3_video_consumer.py" 2>/dev/null && sleep 1 || true
 echo "  ✓ Cleanup complete"
@@ -269,7 +269,7 @@ for i in $(seq 1 $STREAM_INSTANCES); do
     fi
     
     echo "   Starting instance $i/$STREAM_INSTANCES..."
-    CLIP_STORAGE_PATH="$OUTPUT_DIR" KAFKA_GROUP_ID="$KAFKA_GROUP_ID" python3 streams/fire_detection_stream.py > "$LOG_FILE" 2>&1 &
+    CLIP_STORAGE_PATH="$OUTPUT_DIR" KAFKA_GROUP_ID="$KAFKA_GROUP_ID" python3 -m streams > "$LOG_FILE" 2>&1 &
     INSTANCE_PID=$!
     STREAM_PIDS+=($INSTANCE_PID)
     echo "   Instance $i PID: $INSTANCE_PID"

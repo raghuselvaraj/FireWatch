@@ -1,67 +1,69 @@
 """Tests for model loading."""
-import pytest
-from unittest.mock import Mock, patch, MagicMock
-from streams.fire_detection_stream import FireDetectionModel
+from unittest.mock import Mock, patch
+
+from streams.models.dispatcher import FireDetectionModel
 
 
 class TestModelLoading:
-    """Tests for model loading functionality."""
-    
-    @patch('streams.fire_detection_stream.config')
+    """Tests for the FireDetectionModel dispatcher's backend selection."""
+
+    @patch("streams.models.dispatcher.config")
     def test_fire_detect_nn_model_loading(self, mock_config):
-        """Test fire-detect-nn model loading."""
+        """When ML_MODEL_TYPE=fire-detect-nn the dispatcher loads FireDetectNN."""
         mock_config.ML_MODEL_TYPE = "fire-detect-nn"
         mock_config.ML_MODEL_SOURCE = "fire-detect-nn"
+        mock_config.ML_MODEL_PATH = "models/fire_detection_model.pt"
+        mock_config.ML_MODEL_NAME = "ignored-for-this-backend"
         mock_config.CONFIDENCE_THRESHOLD = 0.5
         mock_config.IOU_THRESHOLD = 0.45
-        
-        # Mock fire-detect-nn imports
-        with patch('streams.fire_detection_stream.FIRE_DETECT_NN_AVAILABLE', True), \
-             patch('streams.fire_detection_stream.FireDetectionModel._load_fire_detect_nn') as mock_load:
-            mock_model = Mock()
-            mock_device = Mock()
-            mock_load.return_value = (mock_model, mock_device)
-            
+
+        mock_model = Mock()
+        mock_device = Mock()
+        mock_transform = Mock()
+
+        # Patch the loader hook used by FireDetectNN.__init__ so we don't touch
+        # torch / fire-detect-nn at all during this unit test.
+        with patch("streams.models.fire_detect_nn.FireDetectNN._load",
+                   return_value=(mock_model, mock_device, mock_transform)):
             model = FireDetectionModel()
-            
-            assert model.use_fire_detect_nn is True
-            assert model.model == mock_model
-            assert model.device == mock_device
-    
-    @patch('streams.fire_detection_stream.config')
+
+        assert model.use_fire_detect_nn is True
+        assert model.model is mock_model
+        assert model.device is mock_device
+        assert model.fire_transform is mock_transform
+
+    @patch("streams.models.dispatcher.config")
     def test_yolo_model_loading(self, mock_config):
-        """Test YOLOv8 model loading."""
+        """When ML_MODEL_TYPE=ultralytics the dispatcher loads YOLOv8Detector."""
         mock_config.ML_MODEL_TYPE = "ultralytics"
         mock_config.ML_MODEL_SOURCE = "local"
         mock_config.ML_MODEL_PATH = "models/test_model.pt"
         mock_config.ML_MODEL_NAME = "yolov8n.pt"
         mock_config.CONFIDENCE_THRESHOLD = 0.25
         mock_config.IOU_THRESHOLD = 0.45
-        
-        # Mock YOLO loading
-        with patch('streams.fire_detection_stream.YOLO') as mock_yolo_class:
-            mock_yolo = Mock()
-            mock_yolo_class.return_value = mock_yolo
-            
+
+        mock_yolo = Mock()
+        with patch("streams.models.yolov8.YOLOv8Detector._load", return_value=mock_yolo):
             model = FireDetectionModel()
-            
-            assert model.use_fire_detect_nn is False
-            assert model.model == mock_yolo
-    
-    @patch('streams.fire_detection_stream.config')
+
+        assert model.use_fire_detect_nn is False
+        assert model.model is mock_yolo
+
+    @patch("streams.models.dispatcher.config")
     def test_model_configuration_defaults(self, mock_config):
-        """Test model configuration with defaults."""
+        """Threshold values are pulled from config and exposed on the dispatcher."""
         mock_config.ML_MODEL_TYPE = "fire-detect-nn"
         mock_config.ML_MODEL_SOURCE = "fire-detect-nn"
+        mock_config.ML_MODEL_PATH = "models/fire_detection_model.pt"
+        mock_config.ML_MODEL_NAME = "ignored-for-this-backend"
         mock_config.CONFIDENCE_THRESHOLD = 0.5
         mock_config.IOU_THRESHOLD = 0.45
-        
-        with patch('streams.fire_detection_stream.FireDetectionModel._load_fire_detect_nn') as mock_load:
-            mock_load.return_value = (Mock(), Mock())
-            
+
+        with patch("streams.models.fire_detect_nn.FireDetectNN._load",
+                   return_value=(Mock(), Mock(), Mock())):
             model = FireDetectionModel()
-            
-            assert model.confidence_threshold == 0.5
-            assert model.iou_threshold == 0.45
-            assert model.use_fire_detect_nn is True
+
+        assert model.confidence_threshold == 0.5
+        assert model.iou_threshold == 0.45
+        assert model.use_fire_detect_nn is True
 

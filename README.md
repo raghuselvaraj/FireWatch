@@ -38,7 +38,7 @@ For scaling guide, see [docs/SCALING.md](docs/SCALING.md).
 - Publishes frames to Kafka topic `video-frames`
 - Encodes frames as base64 JPEG for efficient transmission
 
-### 2. Fire Detection Stream (`streams/fire_detection_stream.py`)
+### 2. Fire Detection Stream (`python -m streams` — package at `streams/`)
 - Python-based stream processor using kafka-python
 - Consumes frames from `video-frames` topic
 - Runs ML model inference on each frame
@@ -216,7 +216,7 @@ In separate terminals (run from project root directory):
 
 ```bash
 # Terminal 1: Fire Detection Stream
-python3 streams/fire_detection_stream.py
+python3 -m streams
 
 # Terminal 2: S3 Upload Consumer
 python3 consumer/s3_video_consumer.py
@@ -290,8 +290,11 @@ FireWatch/
 │   ├── __init__.py
 │   └── video_producer.py          # Kafka producer for video frames
 ├── streams/
-│   ├── __init__.py
-│   └── fire_detection_stream.py   # Stream processor for ML inference
+│   ├── __init__.py                # re-exports the public surface
+│   ├── __main__.py                # entrypoint: `python -m streams`
+│   ├── stream.py                  # Kafka consumer loop + per-video state
+│   ├── models/                    # FireDetectionModel + per-backend predictors
+│   └── pipeline/                  # video_writer, overlay, progress, serialization
 ├── consumer/
 │   ├── __init__.py
 │   └── s3_video_consumer.py       # S3 upload consumer

@@ -18,7 +18,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from streams.fire_detection_stream import FireDetectionStream
+from streams import FireDetectionStream
 import config
 
 
@@ -38,9 +38,9 @@ class TestVideoFinalizationConcurrency(unittest.TestCase):
         config.CLIP_STORAGE_PATH = self.temp_dir
         
         # Mock Kafka consumer and producer, and suppress prints
-        with patch('streams.fire_detection_stream.KafkaConsumer'), \
-             patch('streams.fire_detection_stream.KafkaProducer'), \
-             patch('streams.fire_detection_stream.FireDetectionModel'), \
+        with patch('streams.stream.KafkaConsumer'), \
+             patch('streams.stream.KafkaProducer'), \
+             patch('streams.stream.FireDetectionModel'), \
              patch('builtins.print'):  # Suppress print statements
             self.stream = FireDetectionStream()
     

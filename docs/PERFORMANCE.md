@@ -83,13 +83,13 @@ To process more videos faster, run multiple stream processors:
 
 ```bash
 # Terminal 1
-python3 streams/fire_detection_stream.py
+python3 -m streams
 
 # Terminal 2
-python3 streams/fire_detection_stream.py
+python3 -m streams
 
 # Terminal 3
-python3 streams/fire_detection_stream.py
+python3 -m streams
 
 # ... up to N instances (where N = number of partitions)
 ```
