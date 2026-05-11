@@ -311,6 +311,34 @@ graph LR
   - Real-time video overlay
   - Incremental video writing (prevents OOM)
 
+#### Internal module layout
+
+The stream package is split by concern. Run it with `python -m streams`.
+
+```
+streams/
+├── __init__.py            # re-exports FireDetectionStream, FireDetectionModel, convert_numpy_types
+├── __main__.py            # entrypoint: `python -m streams`
+├── stream.py              # Kafka consumer loop, per-video state, signal handling
+├── models/
+│   ├── __init__.py        # exposes FireDetectionModel
+│   ├── dispatcher.py      # FireDetectionModel — picks a backend by config
+│   ├── fire_detect_nn.py  # FireDetectNN — DenseNet121 classifier + GradCAM
+│   ├── yolov8.py          # YOLOv8Detector — Ultralytics wrapper with fire-class filtering
+│   └── gradcam.py         # compute_gradcam_heatmap(...) — forward+backward hook helper
+└── pipeline/
+    ├── overlay.py         # overlay_heatmap_on_frame(...)
+    ├── progress.py        # progress-file read/write with fcntl locking
+    ├── serialization.py   # convert_numpy_types(...)
+    └── video_writer.py    # codec probing + open_writer + finalize_writer
+```
+
+Tests target these modules directly: backend predict paths in
+`tests/test_fire_detection_stream.py`, the dispatcher in
+`tests/test_model_loading.py`, the JSON helper in `tests/test_utils.py`, and
+the writer/finalize concurrency suite in
+`tests/test_video_finalization_concurrency.py`.
+
 ### S3 Upload Consumer
 - **Input**: Completion events from `video-completions` topic
 - **Output**: Videos uploaded to S3

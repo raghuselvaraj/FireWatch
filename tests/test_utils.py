@@ -1,7 +1,7 @@
 """Tests for utility functions."""
 import pytest
 import numpy as np
-from streams.fire_detection_stream import convert_numpy_types
+from streams.pipeline.serialization import convert_numpy_types
 
 
 class TestConvertNumpyTypes:

@@ -5,7 +5,7 @@ echo "🛑 Stopping all FireWatch processes..."
 
 # Kill stream processor processes
 echo "Stopping stream processors..."
-pkill -f "fire_detection_stream.py" && echo "  ✓ Stream processors stopped" || echo "  (No stream processors running)"
+pkill -f "python.* -m streams" && echo "  ✓ Stream processors stopped" || echo "  (No stream processors running)"
 
 # Kill producer processes
 echo "Stopping video producers..."
@@ -29,16 +29,16 @@ if [ -n "$KAFKA_CONTAINERS" ]; then
 fi
 
 # Check for any remaining Python processes
-REMAINING=$(ps aux | grep -E "fire_detection_stream|test_with_videos|s3_video_consumer" | grep -v grep | wc -l | tr -d ' ')
+REMAINING=$(ps aux | grep -E "python.* -m streams|test_with_videos|s3_video_consumer" | grep -v grep | wc -l | tr -d ' ')
 if [ "$REMAINING" -gt 0 ]; then
     echo ""
     echo "⚠️  Warning: $REMAINING process(es) still running:"
-    ps aux | grep -E "fire_detection_stream|test_with_videos|s3_video_consumer" | grep -v grep
+    ps aux | grep -E "python.* -m streams|test_with_videos|s3_video_consumer" | grep -v grep
     echo ""
     read -p "Force kill remaining processes? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        pkill -9 -f "fire_detection_stream.py"
+        pkill -9 -f "python.* -m streams"
         pkill -9 -f "test_with_videos.py"
         pkill -9 -f "s3_video_consumer.py"
         echo "  ✓ Force killed all processes"

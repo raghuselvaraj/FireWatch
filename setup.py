@@ -49,7 +49,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "firewatch-stream=streams.fire_detection_stream:main",
+            "firewatch-stream=streams.__main__:main",
             "firewatch-producer=producer.video_producer:main",
             "firewatch-s3-upload=consumer.s3_video_consumer:main",
         ],

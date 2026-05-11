@@ -52,7 +52,7 @@ Sometimes you want each component in its own terminal so you can read the logs l
 ### Terminal 1 — stream processor
 
 ```bash
-python3 streams/fire_detection_stream.py
+python3 -m streams
 ```
 
 Expected output:
