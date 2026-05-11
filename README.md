@@ -95,16 +95,19 @@ Alternatively, install as a package (which includes fire-detect-nn installation)
 pip install -e .
 ```
 
-4. Run unit tests (optional):
+4. Configure environment variables:
+```bash
+cp .env.example .env
+# Defaults work for local-only runs; edit only if you want to point at a
+# remote Kafka cluster or enable S3 uploads.
+```
+
+5. Run unit tests (optional):
 ```bash
 pytest
 ```
 
-5. Configure environment variables:
-```bash
-cp .env.example .env
-# Edit .env with your Kafka and AWS credentials (for S3)
-```
+> The test suite mocks Kafka and S3, so it doesn't talk to real infrastructure — you don't need a running broker or an S3 bucket to run `pytest`, and you don't need to put any sample videos in S3.
 
 ### Environment Variables
 
