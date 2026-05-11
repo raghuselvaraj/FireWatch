@@ -301,13 +301,13 @@ graph LR
 
 ### Fire Detection Stream
 - **Input**: Frames from `video-frames` topic
-- **Output**: 
+- **Output**:
   - Detection results to `fire-detections` topic
   - Completion events to `video-completions` topic
   - Local annotated video files
 - **Key Features**:
-  - ML inference (fire-detect-nn DenseNet121)
-  - GradCAM heatmap generation
+  - ML inference — fire-detect-nn DenseNet121 (default) or Ultralytics YOLOv8 (`ML_MODEL_TYPE=ultralytics`)
+  - GradCAM heatmap generation (fire-detect-nn only; computed only on positive frames)
   - Real-time video overlay
   - Incremental video writing (prevents OOM)
 
@@ -472,5 +472,5 @@ graph LR
 - [ ] Multi-region deployment
 - [ ] GPU support for faster ML inference
 - [ ] Video streaming API (API Gateway + Lambda)
-- [ ] Analytics pipeline (Kafka → Snowflake via Snowpipe Streaming)
+- [ ] Custom-trained model (see `docs/TRAINING.md` once added in Phase 4)
 

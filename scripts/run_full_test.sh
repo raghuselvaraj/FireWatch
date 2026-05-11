@@ -2,7 +2,7 @@
 # Complete test script that runs all components and processes test videos
 
 # Parse command line arguments
-VIDEO_ARG=""
+VIDEO_ARGS=()
 STREAM_INSTANCES=1  # Default to 1 instance
 FAST_TESTS=false    # Default to running all tests
 
@@ -17,7 +17,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            echo "Usage: $0 [--instances N] [--fast-tests] [video_file]"
+            echo "Usage: $0 [--instances N] [--fast-tests] <video_file> [video_file ...]"
             echo ""
             echo "Options:"
             echo "  --instances, -i N    Number of stream processor instances to run (default: 1)"
@@ -27,22 +27,22 @@ while [[ $# -gt 0 ]]; do
             echo "                       Default: runs all tests"
             echo ""
             echo "Arguments:"
-            echo "  video_file           Optional path to a specific video file to process"
+            echo "  video_file           One or more paths to video files to process."
             echo ""
             exit 0
             ;;
         *)
-            if [ -z "$VIDEO_ARG" ]; then
-                VIDEO_ARG="$1"
-            else
-                echo "⚠️  Unknown argument: $1"
-                echo "Use --help for usage information"
-                exit 1
-            fi
+            VIDEO_ARGS+=("$1")
             shift
             ;;
     esac
 done
+
+if [ ${#VIDEO_ARGS[@]} -eq 0 ]; then
+    echo "❌ ERROR: at least one video file path is required."
+    echo "Use --help for usage information."
+    exit 1
+fi
 
 # Validate instances count
 if ! [[ "$STREAM_INSTANCES" =~ ^[1-9][0-9]*$ ]]; then
@@ -53,9 +53,7 @@ fi
 echo "=========================================="
 echo "FireWatch Complete Pipeline Test"
 echo "=========================================="
-if [ -n "$VIDEO_ARG" ]; then
-    echo "Video: $VIDEO_ARG"
-fi
+echo "Videos: ${VIDEO_ARGS[*]}"
 echo "Stream instances: $STREAM_INSTANCES"
 
 # Run unit tests first
@@ -331,21 +329,9 @@ echo ""
 
 # Start video producer in background (processes videos and sends frames to Kafka)
 PROGRESS_FILE="/tmp/firewatch_video_progress.json"
-echo "3. Starting video producer (processing videos and sending frames to Kafka)..."
-# If using multiple stream instances, process multiple videos to utilize all instances
-# Otherwise, process single video (or specified video)
-if [ "$STREAM_INSTANCES" -gt 1 ] && [ -z "$VIDEO_ARG" ]; then
-    # Multiple instances but no specific video - process multiple videos in parallel
-    echo "   Processing multiple videos in parallel (to utilize $STREAM_INSTANCES stream instances)..."
-    PROGRESS_FILE="$PROGRESS_FILE" STREAM_INSTANCES="$STREAM_INSTANCES" python3 scripts/test_with_videos.py > logs/producer.log 2>&1 &
-elif [ -n "$VIDEO_ARG" ]; then
-    # Specific video provided - process just that one
-    echo "   Processing single video: $VIDEO_ARG"
-    PROGRESS_FILE="$PROGRESS_FILE" python3 scripts/test_with_videos.py "$VIDEO_ARG" > logs/producer.log 2>&1 &
-else
-    # Single instance, no specific video - process default
-    PROGRESS_FILE="$PROGRESS_FILE" python3 scripts/test_with_videos.py > logs/producer.log 2>&1 &
-fi
+echo "3. Starting video producer (processing ${#VIDEO_ARGS[@]} video(s) and sending frames to Kafka)..."
+PROGRESS_FILE="$PROGRESS_FILE" STREAM_INSTANCES="$STREAM_INSTANCES" \
+    python3 scripts/test_with_videos.py "${VIDEO_ARGS[@]}" > logs/producer.log 2>&1 &
 PRODUCER_PID=$!
 echo "   Producer PID: $PRODUCER_PID"
 echo "   Log file: logs/producer.log"

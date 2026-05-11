@@ -41,7 +41,7 @@ setup(
     version="0.1.0",
     description="Real-time forest fire detection using Kafka and ML",
     author="FireWatch Team",
-    packages=find_packages(exclude=["fire-detect-nn", "test_files", "clips", "logs"]),
+    packages=find_packages(exclude=["clips", "logs"]),
     install_requires=requirements,
     python_requires=">=3.8",
     cmdclass={

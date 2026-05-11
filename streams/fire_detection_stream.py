@@ -25,28 +25,16 @@ sys.path.insert(0, str(project_root))
 
 import config
 
-# Import fire-detect-nn if using that model type
-# Try importing from installed package first, then fall back to local directory
+# Import fire-detect-nn if using that model type. The install script
+# (scripts/install_fire_detect_nn.py) places the package in site-packages.
 FIRE_DETECT_NN_AVAILABLE = False
 if config.ML_MODEL_TYPE == "fire-detect-nn" or config.ML_MODEL_SOURCE == "fire-detect-nn":
     try:
-        # First try importing from installed package (site-packages)
-        try:
-            import fire_detect_nn
-            FIRE_DETECT_NN_AVAILABLE = True
-            print("✓ fire-detect-nn found in site-packages")
-        except ImportError:
-            # Fall back to local directory (for backwards compatibility)
-            fire_detect_dir = project_root / config.FIRE_DETECT_NN_DIR
-            if fire_detect_dir.exists():
-                sys.path.insert(0, str(fire_detect_dir))
-                FIRE_DETECT_NN_AVAILABLE = True
-                print(f"✓ fire-detect-nn found in local directory: {fire_detect_dir}")
-            else:
-                print(f"⚠️  fire-detect-nn not found in site-packages or local directory")
-                print(f"   Run: python3 scripts/install_fire_detect_nn.py")
-    except Exception as e:
-        print(f"⚠️  fire-detect-nn not available: {e}")
+        import fire_detect_nn
+        FIRE_DETECT_NN_AVAILABLE = True
+        print("✓ fire-detect-nn found in site-packages")
+    except ImportError:
+        print("⚠️  fire-detect-nn not installed. Run: python3 scripts/install_fire_detect_nn.py")
 
 
 class FireDetectionModel:
@@ -76,34 +64,17 @@ class FireDetectionModel:
         print(f"Confidence threshold: {self.confidence_threshold}, IOU threshold: {self.iou_threshold}")
     
     def _load_fire_detect_nn(self):
-        """Load fire-detect-nn model by importing from installed package or local directory."""
+        """Load fire-detect-nn model from the installed site-packages copy."""
         try:
             import torch
-            import site
-            
-            # Try to import from installed package first
-            try:
-                import fire_detect_nn
-                # Get the installed package path
-                fire_detect_nn_path = Path(fire_detect_nn.__file__).parent
-                from fire_detect_nn.models import FireClassifier
-                from fire_detect_nn.datasets.combo import transform as fire_transform
-                weights_path = fire_detect_nn_path / "weights" / "firedetect-densenet121-pretrained.pt"
-                print(f"Using fire-detect-nn from installed package: {fire_detect_nn_path}")
-            except ImportError:
-                # Fall back to local directory (for backwards compatibility)
-                fire_detect_dir = project_root / config.FIRE_DETECT_NN_DIR
-                if not fire_detect_dir.exists():
-                    raise FileNotFoundError(
-                        f"fire-detect-nn not found in site-packages or local directory.\n"
-                        f"Run: python3 scripts/install_fire_detect_nn.py"
-                    )
-                sys.path.insert(0, str(fire_detect_dir))
-                from models import FireClassifier
-                from datasets.combo import transform as fire_transform
-                weights_path = project_root / config.FIRE_DETECT_NN_WEIGHTS
-                print(f"Using fire-detect-nn from local directory: {fire_detect_dir}")
-            
+            import fire_detect_nn
+            from fire_detect_nn.models import FireClassifier
+            from fire_detect_nn.datasets.combo import transform as fire_transform
+
+            fire_detect_nn_path = Path(fire_detect_nn.__file__).parent
+            weights_path = fire_detect_nn_path / "weights" / "firedetect-densenet121-pretrained.pt"
+            print(f"Using fire-detect-nn from: {fire_detect_nn_path}")
+
             if not weights_path.exists():
                 raise FileNotFoundError(
                     f"fire-detect-nn weights not found: {weights_path}\n"
@@ -266,8 +237,7 @@ class FireDetectionModel:
             detections = []
             max_confidence = 0.0
             has_fire = False
-            all_detections_debug = []  # For debugging
-            
+
             for result in results:
                 boxes = result.boxes
                 
@@ -278,9 +248,6 @@ class FireDetectionModel:
                         confidence = box.conf[0].cpu().item()  # Use .item() to get Python scalar (avoids NumPy deprecation)
                         class_id = int(box.cls[0].cpu().item())  # Use .item() to get Python scalar
                         class_name = result.names[class_id] if hasattr(result, 'names') else f"class_{class_id}"
-                        
-                        # Store all detections for debugging (first 10 frames only)
-                        all_detections_debug.append((class_name, confidence))
                         
                         # Check if this is a fire-related detection
                         # Common fire-related class names: fire, smoke, flame, etc.
@@ -306,19 +273,6 @@ class FireDetectionModel:
                                 "class": class_name,
                                 "class_id": class_id
                             })
-            
-            # Debug output (only for first few frames to avoid spam)
-            import os
-            debug_file = os.getenv("DEBUG_DETECTIONS", "")
-            if debug_file or (hasattr(self, '_debug_frame_count') and self._debug_frame_count < 5):
-                if not hasattr(self, '_debug_frame_count'):
-                    self._debug_frame_count = 0
-                if self._debug_frame_count < 5:
-                    if all_detections_debug:
-                        print(f"   [DEBUG] Frame detections: {[(c, f'{conf:.1%}') for c, conf in all_detections_debug[:5]]}")
-                    else:
-                        print(f"   [DEBUG] No detections in frame (threshold: {inference_conf})")
-                self._debug_frame_count += 1
             
             return {
                 "has_fire": bool(has_fire),
@@ -1169,19 +1123,7 @@ class FireDetectionStream:
                 
                 if should_update:
                     self._update_stream_progress(video_id)
-                
-                # Periodically check if writer is still working (every 100 frames)
-                # This helps catch issues early and ensures frames are being written
-                if self.video_frame_counts[video_id] % 100 == 0:
-                    # Verify file is growing (basic sanity check)
-                    metadata = self.video_metadata.get(video_id, {})
-                    filepath = metadata.get("filepath")
-                    if filepath and os.path.exists(filepath):
-                        current_size = os.path.getsize(filepath)
-                        # If file hasn't grown in a while, there might be an issue
-                        # (but don't spam logs - just verify it's working)
-                        pass
-            
+
             # Create detection result
             detection_result = {
                 "video_id": video_id,

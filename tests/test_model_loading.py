@@ -12,8 +12,6 @@ class TestModelLoading:
         """Test fire-detect-nn model loading."""
         mock_config.ML_MODEL_TYPE = "fire-detect-nn"
         mock_config.ML_MODEL_SOURCE = "fire-detect-nn"
-        mock_config.FIRE_DETECT_NN_DIR = "fire-detect-nn"
-        mock_config.FIRE_DETECT_NN_WEIGHTS = "fire-detect-nn/weights/firedetect-densenet121-pretrained.pt"
         mock_config.CONFIDENCE_THRESHOLD = 0.5
         mock_config.IOU_THRESHOLD = 0.45
         
