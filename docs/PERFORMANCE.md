@@ -95,9 +95,15 @@ GRADCAM_EVERY_N_FIRE_FRAMES=5   # default 5
 
 GradCAM is the expensive part of fire-detect-nn's positive path (a full backward pass through DenseNet121). Most consecutive fire frames produce near-identical heatmaps, so this knob computes the heatmap only every Nth positive frame and reuses it on the frames in between. Set to 1 to compute on every positive frame (legacy behavior).
 
-### Mixed precision (CUDA only)
+### Mixed precision (CUDA only, default OFF)
 
-The fire-detect-nn backend automatically wraps inference in `torch.autocast(device_type="cuda", dtype=torch.float16)` when running on CUDA. On Apple MPS it stays fp32 (autocast on MPS is still flaky in torch 2.x). No env knob — automatic.
+```env
+ENABLE_AUTOCAST_CUDA=1   # default 0 (off)
+```
+
+At batch_size=1 the `torch.autocast(device_type="cuda", dtype=torch.float16)` context manager's setup/teardown cost outweighs the fp16 compute savings — measured ~22% **slower** on Tesla T4 at batch_size=1 (32.2 fps vs 42.8 fps for vanilla fp32). Autocast is a win at batch_size ≥ 16 where fp16 matmul speedups overshadow the dtype-tracking overhead.
+
+Phase 3 ships with batch_size=1, so the autocast wrapper is **disabled by default** on CUDA. Flip the env knob on once batched inference lands. MPS stays fp32 unconditionally (autocast on MPS is still flaky in torch 2.x).
 
 ### Frame transport
 

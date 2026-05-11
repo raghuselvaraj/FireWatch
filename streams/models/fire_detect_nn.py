@@ -5,6 +5,7 @@ The upstream package is fetched into site-packages by
 ``fire_detect_nn`` succeeds and that the pretrained weights file lives at
 ``<site-packages>/fire_detect_nn/weights/firedetect-densenet121-pretrained.pt``.
 """
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -108,11 +109,17 @@ class FireDetectNN:
             pil_image = Image.fromarray(frame_rgb)
             input_tensor = self.fire_transform(pil_image).unsqueeze(0).to(self.device)
 
-            # fp16 autocast on CUDA gives ~1.5-2x throughput for free; MPS
-            # support is still flaky on torch 2.x and Apple's fp16 path silently
-            # mishandles some torchvision ops, so we leave it as fp32 there.
-            # CPU autocast exists but offers little speedup for this model size.
-            use_autocast = self.device.type == "cuda"
+            # fp16 autocast on CUDA is gated behind ENABLE_AUTOCAST_CUDA because
+            # at batch_size=1 the autocast context overhead actually slows the
+            # forward pass down (verified: ~22% slower on T4 at batch_size=1).
+            # Autocast becomes a win at batch_size >= 16 or so, where fp16
+            # matmul speedups overshadow the dtype-tracking overhead. Phase 3
+            # ships with batch_size=1, so this defaults to off; flip it on
+            # alongside batched inference in a Phase 3 follow-up.
+            use_autocast = (
+                self.device.type == "cuda"
+                and os.getenv("ENABLE_AUTOCAST_CUDA", "0").lower() in ("1", "true", "yes")
+            )
             with torch.no_grad():
                 if use_autocast:
                     with torch.autocast(device_type="cuda", dtype=torch.float16):
