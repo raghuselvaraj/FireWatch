@@ -14,6 +14,7 @@ import json
 import os
 import signal
 import sys
+import time
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -54,10 +55,22 @@ class FireDetectionStream:
     def __init__(self):
         group_id = os.environ.get("KAFKA_GROUP_ID", "fire-detection-stream")
 
+        self._transport = config.FRAME_TRANSPORT
+        if self._transport == "msgpack":
+            import msgpack
+
+            value_deserializer = lambda m: msgpack.unpackb(m, raw=False)
+        elif self._transport == "base64-json":
+            value_deserializer = lambda m: json.loads(m.decode("utf-8"))
+        else:
+            raise ValueError(
+                f"Unknown FRAME_TRANSPORT={self._transport!r}; expected 'msgpack' or 'base64-json'."
+            )
+
         self.consumer = KafkaConsumer(
             config.KAFKA_VIDEO_TOPIC,
             bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
-            value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+            value_deserializer=value_deserializer,
             key_deserializer=lambda k: k.decode("utf-8") if k else None,
             group_id=group_id,
             auto_offset_reset="earliest",
@@ -99,11 +112,27 @@ class FireDetectionStream:
         self.progress_file = os.getenv("PROGRESS_FILE", "/tmp/firewatch_video_progress.json")
         self.last_progress_update: Dict[str, float] = {}
 
+        # Phase 3: per-video inference cadence counter + last-prediction cache.
+        # When INFERENCE_EVERY_N_FRAMES > 1, in-between frames reuse the last
+        # prediction (so the output video still gets every frame written, but
+        # most of them skip the model forward pass).
+        self._inference_every_n = max(1, getattr(config, "INFERENCE_EVERY_N_FRAMES", 1))
+        self._frames_since_inference: Dict[str, int] = {}
+        self._last_prediction: Dict[str, Dict[str, Any]] = {}
+
     # ----- frame I/O -------------------------------------------------------
 
-    def decode_frame(self, frame_data: str) -> np.ndarray:
-        """Decode a base64 JPEG payload back to a BGR numpy array."""
-        frame_bytes = base64.b64decode(frame_data)
+    def decode_frame(self, frame_data) -> np.ndarray:
+        """Decode the JPEG payload back to a BGR numpy array.
+
+        Under ``msgpack`` transport ``frame_data`` is already raw JPEG bytes;
+        under ``base64-json`` it's a base64-encoded string. Accept either so
+        the same FireDetectionStream can run end-to-end tests in mixed modes.
+        """
+        if isinstance(frame_data, str):
+            frame_bytes = base64.b64decode(frame_data)
+        else:
+            frame_bytes = frame_data
         nparr = np.frombuffer(frame_bytes, np.uint8)
         return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -333,7 +362,20 @@ class FireDetectionStream:
                 if meta.get("width") and meta.get("height"):
                     self._initialize_video_writer(video_id, meta["width"], meta["height"], meta["fps"])
 
-            prediction = self.model.predict(frame)
+            # Inference cadence: run the model every Nth frame. The skipped
+            # frames reuse the cached prediction (so heatmap + has_fire reflect
+            # the most recent inferred state) and still get written to the MP4.
+            self._frames_since_inference[video_id] = self._frames_since_inference.get(video_id, 0) + 1
+            should_infer = (
+                self._frames_since_inference[video_id] >= self._inference_every_n
+                or video_id not in self._last_prediction
+            )
+            if should_infer:
+                prediction = self.model.predict(frame)
+                self._last_prediction[video_id] = prediction
+                self._frames_since_inference[video_id] = 0
+            else:
+                prediction = self._last_prediction[video_id]
 
             if video_id in self.video_stats:
                 self.video_stats[video_id]["frames"] += 1
@@ -383,7 +425,8 @@ class FireDetectionStream:
     # ----- lifecycle ------------------------------------------------------
 
     def _cleanup(self) -> None:
-        """Finalize every open video writer. Called on SIGINT/SIGTERM."""
+        """Finalize every open video writer + commit Kafka offsets. Called on
+        SIGINT/SIGTERM as well as the run() exception paths."""
         print("\n🛑 Cleaning up and finalizing all videos...")
         for video_id in list(self.video_writers.keys()):
             if self.video_writers[video_id] is not None:
@@ -391,6 +434,12 @@ class FireDetectionStream:
                     self._close_video_writer(video_id, print_summary=True)
                 except Exception as e:
                     print(f"Error closing video {video_id} during cleanup: {e}")
+        # Flush offsets so a re-run with the same group_id doesn't reprocess
+        # the tail of frames we already handled.
+        try:
+            self.consumer.commit()
+        except Exception as e:
+            print(f"⚠️  Error committing offset during cleanup: {e}")
 
     def run(self) -> None:
         """Main consumer loop. Blocks until SIGINT/SIGTERM or fatal error."""
@@ -410,74 +459,97 @@ class FireDetectionStream:
         message_count = 0
         detection_count = 0
         fire_count = 0
+        last_commit_time = time.monotonic()
+        last_committed_count = 0
+
+        def maybe_commit(force: bool = False) -> None:
+            """Commit consumer offsets if the message-count or time-interval
+            threshold is met (or force=True). Updates last_commit_time on a
+            successful commit so the interval window resets.
+
+            Critically, this runs on every poll iteration — including idle
+            polls that returned no records — so the time-interval guard fires
+            naturally when the topic drains. Without that, the tail of a
+            video (the messages after the last N-threshold commit) would
+            never get committed, and `scripts/run_full_test.sh`'s lag check
+            would never see the topic as drained.
+            """
+            nonlocal last_commit_time, last_committed_count
+            if message_count == last_committed_count and not force:
+                return  # nothing new to commit
+            elapsed = time.monotonic() - last_commit_time
+            hit_count = message_count > 0 and message_count % config.COMMIT_EVERY_N_MESSAGES == 0
+            hit_interval = elapsed >= config.COMMIT_INTERVAL_SECONDS and message_count > 0
+            if force or hit_count or hit_interval:
+                try:
+                    self.consumer.commit()
+                    last_commit_time = time.monotonic()
+                    last_committed_count = message_count
+                except Exception as e:
+                    print(f"⚠️  Error committing offset: {e}")
 
         try:
-            for message in self.consumer:
-                message_count += 1
-                video_id = message.key
-                frame_data = message.value
-
-                if message_count % 10 == 0:
-                    print(
-                        f"Processed {message_count} frames... "
-                        f"(latest: frame {frame_data.get('frame_number')} from video {video_id})"
-                    )
-
-                detection_result = self.process_frame(frame_data)
-                if detection_result is None:
-                    print(
-                        f"⚠️  Failed to process frame {frame_data.get('frame_number')} "
-                        f"from video {video_id}"
-                    )
+            # Poll explicitly so the idle path runs maybe_commit and the
+            # time-interval threshold can fire when the topic drains.
+            while True:
+                records = self.consumer.poll(timeout_ms=1000)
+                if not records:
+                    maybe_commit()
                     continue
 
-                detection_count += 1
-                if detection_result["has_fire"]:
-                    fire_count += 1
-                    print(
-                        f"🔥 Fire detected! Frame {frame_data.get('frame_number')} from video "
-                        f"{video_id} - Probability: {detection_result['fire_probability']:.2%}"
-                    )
+                for _tp, messages in records.items():
+                    for message in messages:
+                        message_count += 1
+                        video_id = message.key
+                        frame_data = message.value
 
-                future = self.producer.send(
-                    self.detections_topic, key=video_id, value=detection_result
-                )
+                        if message_count % 10 == 0:
+                            print(
+                                f"Processed {message_count} frames... "
+                                f"(latest: frame {frame_data.get('frame_number')} from video {video_id})"
+                            )
 
-                # Only attach callbacks for positive detections — keeps the
-                # hot-path overhead down for the (much larger) negative stream.
-                if detection_result["has_fire"]:
-                    def on_send_success(record_metadata):
-                        print(
-                            f"  → Detection sent to topic {record_metadata.topic} "
-                            f"partition {record_metadata.partition}"
+                        detection_result = self.process_frame(frame_data)
+                        if detection_result is None:
+                            print(
+                                f"⚠️  Failed to process frame {frame_data.get('frame_number')} "
+                                f"from video {video_id}"
+                            )
+                            continue
+
+                        detection_count += 1
+                        if detection_result["has_fire"]:
+                            fire_count += 1
+                            print(
+                                f"🔥 Fire detected! Frame {frame_data.get('frame_number')} from video "
+                                f"{video_id} - Probability: {detection_result['fire_probability']:.2%}"
+                            )
+
+                        future = self.producer.send(
+                            self.detections_topic, key=video_id, value=detection_result
                         )
 
-                    def on_send_error(excp):
-                        print(f"  ⚠️  Error sending detection: {excp}")
+                        # Only attach callbacks for positive detections — keeps the
+                        # hot-path overhead down for the (much larger) negative stream.
+                        if detection_result["has_fire"]:
+                            def on_send_success(record_metadata):
+                                print(
+                                    f"  → Detection sent to topic {record_metadata.topic} "
+                                    f"partition {record_metadata.partition}"
+                                )
 
-                    future.add_callback(on_send_success)
-                    future.add_errback(on_send_error)
+                            def on_send_error(excp):
+                                print(f"  ⚠️  Error sending detection: {excp}")
 
-                # Commit every 250 messages: throughput tradeoff per the
-                # original module's comment. Phase 3 will revisit this.
-                if message_count % 250 == 0:
-                    try:
-                        self.consumer.commit()
-                    except Exception as e:
-                        print(f"⚠️  Error committing offset: {e}")
+                            future.add_callback(on_send_success)
+                            future.add_errback(on_send_error)
 
-            # Loop exited via consumer timeout — close any open writers.
-            try:
-                self.consumer.commit()
-            except Exception:
-                pass
+                maybe_commit()
 
-            active_videos = [vid for vid, writer in self.video_writers.items() if writer is not None]
-            if active_videos:
-                print(f"\n⚠️  Consumer loop exited - processed {message_count} messages total")
-                print(f"  Closing {len(active_videos)} active video(s)...")
-                for video_id in active_videos:
-                    self._close_video_writer(video_id, print_summary=True)
+            # The `while True` poll loop exits only via signal_handler or
+            # exception — never on its own. Keep the active-video cleanup as
+            # defensive scaffolding for the exception path; the SIGINT path
+            # routes through _cleanup() which already closes writers.
 
         except KeyboardInterrupt:
             print("\n\nStopping stream processor...")

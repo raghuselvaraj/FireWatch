@@ -40,3 +40,28 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET = os.getenv("S3_BUCKET", "")
 S3_DELETE_LOCAL_AFTER_UPLOAD = os.getenv("S3_DELETE_LOCAL_AFTER_UPLOAD", "true").lower() == "true"  # Delete local files after S3 upload
+
+# ---------- Phase 3 — performance & latency knobs ----------
+# Offset commit cadence. The consumer commits after either condition fires —
+# whichever comes first. The interval guard means a short video that doesn't
+# reach the N-message threshold still gets its tail committed, so the
+# run_full_test.sh "is the topic empty?" check completes naturally.
+COMMIT_EVERY_N_MESSAGES = int(os.getenv("COMMIT_EVERY_N_MESSAGES", "250"))
+COMMIT_INTERVAL_SECONDS = float(os.getenv("COMMIT_INTERVAL_SECONDS", "5.0"))
+
+# Compute GradCAM only on every Nth consecutive positive (fire) frame, reusing
+# the last heatmap for the frames in between. Consecutive fire frames tend to
+# share spatial structure, so this is a near-lossless visual change that
+# halves+ the expensive backward-pass cost on positive-heavy clips. Set to 1
+# to disable (compute on every positive frame).
+GRADCAM_EVERY_N_FIRE_FRAMES = int(os.getenv("GRADCAM_EVERY_N_FIRE_FRAMES", "5"))
+
+# Run inference on every Nth frame. Skipped frames still get written to the
+# output video — they just reuse the previous frame's detection state (no fire
+# detected, no heatmap). Set to 1 to run inference on every frame.
+INFERENCE_EVERY_N_FRAMES = int(os.getenv("INFERENCE_EVERY_N_FRAMES", "1"))
+
+# Frame transport: 'msgpack' sends raw JPEG bytes inside msgpack (~33% smaller
+# on the wire and ~5x faster decode vs base64-in-JSON). 'base64-json' is the
+# legacy format. Producer and stream MUST agree on this setting.
+FRAME_TRANSPORT = os.getenv("FRAME_TRANSPORT", "msgpack")
