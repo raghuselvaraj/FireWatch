@@ -25,36 +25,51 @@ Place these files here before running the verification:
 - The D-Fire dataset's README links to `gaiasd`'s surveillance video set; those
   are good `mixed_event` candidates.
 
+### Fallback: synthesize from D-Fire test images
+
+If no real footage is available, `build_synth.py` stitches the three clips
+from the D-Fire test split (each frame has a known label, so ground truth
+falls out for free). Run from the repo root:
+
+```bash
+python tests/fixtures/trail_cam/build_synth.py
+```
+
+Produces the three MP4s above plus `ground_truth.json` (per-clip per-frame
+labels) in this directory. Note these are *training-distribution* images
+rather than trail-cam-style footage — they exercise the pipeline correctly
+but don't stress real-world video characteristics. Used for the initial
+Phase 4 verification run; see `results.md`.
+
 ## Verification workflow
 
-After the three (or two) clips are in place, run both paths and write results
-to `results.md`:
+After clips are in place, run both paths (no Kafka required — the Kafka
+transport is independently covered by the unit suite) and write results to
+`results.md`:
 
-### Local pipeline
+```bash
+# Warm test — confirms the Modal container builds and predict round-trips.
+modal run .modal/firewatch_smoke.py
+
+# Per-clip annotated MP4s + predictions JSON, both paths.
+for clip in positive_fire negative_forest mixed_event; do
+  [ -f "tests/fixtures/trail_cam/${clip}.mp4" ] || continue
+  python3 .modal/run_local.py "tests/fixtures/trail_cam/${clip}.mp4"
+  python3 .modal/run_smoke.py "tests/fixtures/trail_cam/${clip}.mp4"
+done
+# Output → clips/{local,modal}_<clip>_with_heatmaps.mp4
+#          clips/{local,modal}_<clip>_predictions.json
+
+# Compute Local↔Modal divergence and ground-truth accuracy.
+python3 .modal/compare_results.py
+```
+
+If you also want to exercise the full Kafka path on these clips:
 
 ```bash
 docker-compose up -d && ./scripts/setup_kafka_topics.sh
 ML_MODEL_TYPE=firewatch FIREWATCH_MODEL_PATH=models/firewatch-v1.pt python3 -m streams &
-for clip in positive_fire negative_forest mixed_event; do
-  [ -f "tests/fixtures/trail_cam/${clip}.mp4" ] || continue
-  python3 -m producer "tests/fixtures/trail_cam/${clip}.mp4" "local_${clip}"
-done
-# Output → clips/local_<clip>_with_heatmaps.mp4
-```
-
-### Modal smoke path
-
-```bash
-# Warm test — confirms the container builds, model loads, predict round-trips.
-modal run .modal/firewatch_smoke.py
-
-# Per-clip annotated MP4s + predictions JSON.
-for clip in positive_fire negative_forest mixed_event; do
-  [ -f "tests/fixtures/trail_cam/${clip}.mp4" ] || continue
-  python3 .modal/run_smoke.py "tests/fixtures/trail_cam/${clip}.mp4"
-done
-# Output → clips/modal_<clip>_with_heatmaps.mp4
-#          clips/modal_<clip>_predictions.json
+python3 -m producer "tests/fixtures/trail_cam/positive_fire.mp4" "kafka_positive_fire"
 ```
 
 ## Pass criteria
