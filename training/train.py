@@ -127,17 +127,30 @@ def train_one_epoch(
 
     model.train()
     losses: List[float] = []
+    skipped = 0
     pbar = tqdm(loader, desc="train", leave=False)
     for step, (images, labels) in enumerate(pbar):
         if max_steps is not None and step >= max_steps:
             break
-        images = images.to(device, non_blocking=True)
-        labels = labels.float().to(device, non_blocking=True).unsqueeze(1)
+        # non_blocking=True triggered numerical corruption on MPS during smoke
+        # testing — sync transfers are barely slower and keep autograd sane.
+        images = images.to(device)
+        labels = labels.float().to(device).unsqueeze(1)
 
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad()
         logits = model(images)
         loss = criterion(logits, labels)
+        # Skip batches that produce non-finite loss (rare MPS-side instability
+        # at the very start of training); also catches any future regression.
+        if not torch.isfinite(loss):
+            skipped += 1
+            optimizer.zero_grad()
+            continue
         loss.backward()
+        # Standard precaution for fine-tuning a pretrained backbone with a
+        # randomly-initialized head — bounds early gradients while the new
+        # Linear settles into a sensible scale.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
 
         loss_val = loss.item()
@@ -146,6 +159,8 @@ def train_one_epoch(
         if global_step % log_every_n_steps == 0:
             writer.add_scalar("train/loss", loss_val, global_step)
             pbar.set_postfix(loss=f"{loss_val:.4f}")
+    if skipped:
+        print(f"  (skipped {skipped} non-finite-loss batches this epoch)")
 
     return float(np.mean(losses)) if losses else 0.0, global_step
 
@@ -168,8 +183,8 @@ def evaluate(
     for step, (images, labels) in enumerate(tqdm(loader, desc="val", leave=False)):
         if max_steps is not None and step >= max_steps:
             break
-        images = images.to(device, non_blocking=True)
-        labels_t = labels.float().to(device, non_blocking=True).unsqueeze(1)
+        images = images.to(device)
+        labels_t = labels.float().to(device).unsqueeze(1)
         logits = model(images)
         loss = criterion(logits, labels_t)
         losses.append(loss.item())
