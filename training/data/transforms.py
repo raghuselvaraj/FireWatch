@@ -1,22 +1,18 @@
 """Train/val transforms for the FireWatch classifier.
 
 Both pipelines end with the same ``Normalize(RGB_MEAN, RGB_STD)`` step the
-upstream fire-detect-nn package uses at inference. Imported from the upstream
-package directly so we can't drift.
+inference backends use, imported from
+:mod:`streams.models.preprocessing` so train/inference can't drift.
 """
-from fire_detect_nn.datasets.combo import IMG_SHAPE, RGB_MEAN, RGB_STD
 from torchvision import transforms
+
+from streams.models.preprocessing import IMG_SHAPE, RGB_MEAN, RGB_STD, build_inference_transform
 
 
 def build_val_transform():
-    """Deterministic val/inference transform — matches upstream `combo.transform`."""
-    return transforms.Compose(
-        [
-            transforms.Resize(IMG_SHAPE),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=RGB_MEAN, std=RGB_STD),
-        ]
-    )
+    """Deterministic val/inference transform — same as
+    :func:`streams.models.preprocessing.build_inference_transform`."""
+    return build_inference_transform()
 
 
 def build_train_transform():

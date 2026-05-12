@@ -4,8 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from fire_detect_nn.models import FireClassifier
-
+from streams.models.fire_classifier import FireClassifier
 from streams.models.firewatch import FireWatch
 
 

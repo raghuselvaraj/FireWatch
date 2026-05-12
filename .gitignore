@@ -29,6 +29,9 @@ models/*
 *.pt
 yolov8n.pt  # YOLOv8 fallback model (not needed, use fire-detect-nn instead)
 
+# Training runs (TensorBoard events + intermediate checkpoints)
+training/runs/
+
 # Logs
 logs/
 *.log

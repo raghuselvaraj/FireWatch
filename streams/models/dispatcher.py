@@ -18,17 +18,20 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 warnings.filterwarnings("ignore", message=".*x265.*")
 
 
-# Pre-check that fire-detect-nn is importable when configured. This early
-# warning is helpful at startup; the actual import still happens lazily inside
-# the backend's loader. The `firewatch` backend also depends on the
-# fire-detect-nn package (it reuses FireClassifier), so include it here.
+# Pre-check that the fire-detect-nn weights directory is reachable when the
+# legacy backend is configured. The firewatch backend uses our in-project
+# FireClassifier + our own trained checkpoint and does not need the upstream
+# package at all.
 FIRE_DETECT_NN_AVAILABLE = False
-if config.ML_MODEL_TYPE in ("fire-detect-nn", "firewatch") or config.ML_MODEL_SOURCE == "fire-detect-nn":
+if config.ML_MODEL_TYPE == "fire-detect-nn" or config.ML_MODEL_SOURCE == "fire-detect-nn":
     try:
-        import fire_detect_nn  # noqa: F401
+        import importlib.util
 
-        FIRE_DETECT_NN_AVAILABLE = True
-        print("✓ fire-detect-nn found in site-packages")
+        if importlib.util.find_spec("fire_detect_nn") is not None:
+            FIRE_DETECT_NN_AVAILABLE = True
+            print("✓ fire-detect-nn weights directory found")
+        else:
+            print("⚠️  fire-detect-nn not installed. Run: python3 scripts/install_fire_detect_nn.py")
     except ImportError:
         print("⚠️  fire-detect-nn not installed. Run: python3 scripts/install_fire_detect_nn.py")
 

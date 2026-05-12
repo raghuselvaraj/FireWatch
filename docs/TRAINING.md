@@ -11,8 +11,11 @@ existing inference path takes over.
 - Python 3.11+, dependencies from `requirements.txt`:
   ```bash
   pip install -r requirements.txt
-  python3 scripts/install_fire_detect_nn.py     # provides FireClassifier + the input transform
   ```
+  No external ML packages beyond `requirements.txt` are needed — the
+  `FireClassifier` architecture and input normalization are defined locally
+  in [`streams/models/fire_classifier.py`](../streams/models/fire_classifier.py)
+  and [`streams/models/preprocessing.py`](../streams/models/preprocessing.py).
 - ~5 GB free disk for D-Fire (cloned into `~/.cache/firewatch/dfire/` by default).
 - Apple Silicon (MPS) or NVIDIA GPU recommended. CPU works but is slow.
 
@@ -74,10 +77,10 @@ state_dict on top. To make a training-time model produce the same
   (which has `nn.Sigmoid()` at the head) and re-saves. The sigmoid module
   has no parameters, so the state_dict is identical either way.
 
-End result: `models/firewatch-v{N}.pt` is structurally indistinguishable from
-the upstream pretrained checkpoint and uses the same input normalization
+End result: `models/firewatch-v{N}.pt` is structurally identical to the
+legacy fire-detect-nn checkpoint format and uses the same input normalization
 (`mean=(0.4005, 0.3702, 0.3419)`, `std=(0.2858, 0.2749, 0.2742)`, 224×224)
-imported directly from `fire_detect_nn.datasets.combo`.
+defined in [`streams/models/preprocessing.py`](../streams/models/preprocessing.py).
 
 ## Dataset details
 

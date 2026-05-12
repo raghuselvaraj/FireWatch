@@ -15,7 +15,8 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-from fire_detect_nn.models import FireClassifier
+
+from streams.models.fire_classifier import FireClassifier
 
 
 def next_version(models_dir: Path) -> int:

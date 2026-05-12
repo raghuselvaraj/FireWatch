@@ -104,7 +104,8 @@ def install_fire_detect_nn():
     print(f"\n✓ fire-detect-nn installed successfully!")
     print(f"   Location: {fire_detect_nn_dir}")
     print(f"   Weights: {weights_file}")
-    print(f"\nYou can now import it with: from fire_detect_nn.models import FireClassifier")
+    print(f"\nThe legacy 'fire-detect-nn' backend can now load these weights.")
+    print(f"For new deployments prefer ML_MODEL_TYPE=firewatch (see docs/TRAINING.md).")
     
     return True
 

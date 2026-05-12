@@ -1,15 +1,16 @@
 """Backend for the FireWatch in-house DenseNet121 binary classifier.
 
-Architecturally identical to ``FireDetectNN`` — both load the same
-``FireClassifier`` from the fire-detect-nn package — but the weights come from
-``models/firewatch-v{N}.pt`` produced by ``training/`` rather than the upstream
-pretrained checkpoint. The shared inference path lives in
-:class:`~streams.models.classifier_predictor.FireClassifierPredictor`.
+Loads ``models/firewatch-v{N}.pt`` produced by ``training/`` into our
+in-project :class:`~streams.models.fire_classifier.FireClassifier`. Same
+architecture and same input normalization as the legacy fire-detect-nn
+backend — only the weights differ.
 """
 from pathlib import Path
 from typing import Any, Tuple
 
 from streams.models.classifier_predictor import FireClassifierPredictor
+from streams.models.fire_classifier import FireClassifier
+from streams.models.preprocessing import build_inference_transform
 
 
 class FireWatch(FireClassifierPredictor):
@@ -29,14 +30,8 @@ class FireWatch(FireClassifierPredictor):
     def _load_weights(self, device) -> Tuple[Any, Any]:
         try:
             import torch
-            from fire_detect_nn.models import FireClassifier
-            from fire_detect_nn.datasets.combo import transform as fire_transform
         except ImportError as e:
-            raise ImportError(
-                "fire-detect-nn package required for FireClassifier architecture.\n"
-                "Run: python3 scripts/install_fire_detect_nn.py\n"
-                f"Original error: {e}"
-            )
+            raise ImportError(f"torch required: {e}")
 
         weights_path = Path(self.model_path)
         if not weights_path.exists():
@@ -54,4 +49,4 @@ class FireWatch(FireClassifierPredictor):
         model.to(device)
         print(f"✓ FireWatch model loaded successfully on {device}")
 
-        return model, fire_transform
+        return model, build_inference_transform()
