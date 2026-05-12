@@ -22,10 +22,12 @@ class TestModelLoading:
         mock_device = Mock()
         mock_transform = Mock()
 
-        # Patch the loader hook used by FireDetectNN.__init__ so we don't touch
-        # torch / fire-detect-nn at all during this unit test.
-        with patch("streams.models.fire_detect_nn.FireDetectNN._load",
-                   return_value=(mock_model, mock_device, mock_transform)):
+        # Patch the loader hooks used by FireDetectNN.__init__ so we don't
+        # touch torch / fire-detect-nn at all during this unit test.
+        with patch("streams.models.fire_detect_nn.FireDetectNN._select_device",
+                   return_value=mock_device), \
+             patch("streams.models.fire_detect_nn.FireDetectNN._load_weights",
+                   return_value=(mock_model, mock_transform)):
             model = FireDetectionModel()
 
         assert model.use_fire_detect_nn is True
@@ -61,8 +63,10 @@ class TestModelLoading:
         mock_config.IOU_THRESHOLD = 0.45
         mock_config.GRADCAM_EVERY_N_FIRE_FRAMES = 1
 
-        with patch("streams.models.fire_detect_nn.FireDetectNN._load",
-                   return_value=(Mock(), Mock(), Mock())):
+        with patch("streams.models.fire_detect_nn.FireDetectNN._select_device",
+                   return_value=Mock()), \
+             patch("streams.models.fire_detect_nn.FireDetectNN._load_weights",
+                   return_value=(Mock(), Mock())):
             model = FireDetectionModel()
 
         assert model.confidence_threshold == 0.5

@@ -15,6 +15,12 @@ pytest-cov>=4.1.0
 pytest-mock>=3.12.0
 pytest-asyncio>=0.21.0
 
+# Training pipeline (see training/ and docs/TRAINING.md)
+scikit-learn>=1.3.0
+tensorboard>=2.14.0
+tqdm>=4.66.0
+PyYAML>=6.0
+
 # Note: fire-detect-nn is installed automatically via scripts/install_fire_detect_nn.py
 # Run: python3 scripts/install_fire_detect_nn.py
 # Or install the package: pip install -e .  (which runs the install script)

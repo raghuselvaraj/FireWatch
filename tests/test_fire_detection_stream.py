@@ -177,8 +177,10 @@ class TestFireDetectNNBackend:
         mock_model = Mock()
         mock_device = Mock()
         mock_transform = Mock()
-        with patch("streams.models.fire_detect_nn.FireDetectNN._load",
-                   return_value=(mock_model, mock_device, mock_transform)):
+        with patch("streams.models.fire_detect_nn.FireDetectNN._select_device",
+                   return_value=mock_device), \
+             patch("streams.models.fire_detect_nn.FireDetectNN._load_weights",
+                   return_value=(mock_model, mock_transform)):
             backend = FireDetectNN(confidence_threshold=0.5)
         return backend
 
@@ -245,8 +247,10 @@ class TestFireDetectionModelDispatcher:
         mock_config.IOU_THRESHOLD = 0.45
         mock_config.GRADCAM_EVERY_N_FIRE_FRAMES = 1
 
-        with patch("streams.models.fire_detect_nn.FireDetectNN._load",
-                   return_value=(Mock(), Mock(), Mock())):
+        with patch("streams.models.fire_detect_nn.FireDetectNN._select_device",
+                   return_value=Mock()), \
+             patch("streams.models.fire_detect_nn.FireDetectNN._load_weights",
+                   return_value=(Mock(), Mock())):
             model = FireDetectionModel()
 
         sentinel = {"has_fire": False, "fire_probability": 0.0, "detections": []}

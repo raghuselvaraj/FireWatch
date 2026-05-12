@@ -1,13 +1,12 @@
 # Fire Detection Models
 
-FireWatch supports two model backends, selected via the `ML_MODEL_TYPE` environment variable.
+FireWatch supports three model backends, selected via the `ML_MODEL_TYPE` environment variable.
 
 | `ML_MODEL_TYPE` | Backend | Strengths |
 |---|---|---|
 | `fire-detect-nn` (default) | DenseNet121 binary classifier from [tomasz-lewicki/fire-detect-nn](https://github.com/tomasz-lewicki/fire-detect-nn) | Pretrained for fire; provides GradCAM heatmaps for visual fire-region overlay. |
 | `ultralytics` | YOLOv8 object detector via the [`ultralytics`](https://docs.ultralytics.com/) package | Provides bounding boxes; works with any YOLOv8 fire-trained checkpoint. |
-
-> A third option, `firewatch` (our own trained checkpoint), is planned for Phase 4 of the refactor. See `docs/TRAINING.md` once added.
+| `firewatch` | DenseNet121 binary classifier trained in-house on [D-Fire](https://github.com/gaiasd/DFireDataset) | Same architecture as fire-detect-nn but trained on a different dataset. See [TRAINING.md](TRAINING.md). |
 
 ---
 
@@ -93,6 +92,35 @@ IOU_THRESHOLD=0.45
 ### Class filtering
 
 YOLOv8 returns boxes for many object classes. The stream keeps boxes whose label matches any of `fire`, `smoke`, `flame`, `burn`, `wildfire` while excluding common false-positive labels (`fire hydrant`, `fire truck`, `extinguisher`, `alarm`, `station`, `engine`).
+
+---
+
+## firewatch (in-house trained)
+
+A DenseNet121 binary classifier trained on the public [D-Fire dataset](https://github.com/gaiasd/DFireDataset) by the `training/` pipeline. The architecture and inference normalization match `fire-detect-nn` — the difference is the training data and which weights get loaded.
+
+### Train + export
+
+See [TRAINING.md](TRAINING.md) for the full walkthrough. Short version:
+
+```bash
+python3 -m training.data.datasets --download
+python3 -m training.train --config training/configs/default.yaml
+python3 -m training.export --checkpoint training/runs/<run_id>/best.pt
+# → writes models/firewatch-v1.pt + models/firewatch-v1.metadata.json
+```
+
+### Configure
+
+In `.env`:
+
+```env
+ML_MODEL_TYPE=firewatch
+FIREWATCH_MODEL_PATH=models/firewatch-v1.pt
+CONFIDENCE_THRESHOLD=0.5
+```
+
+The stream behaves identically to the `fire-detect-nn` backend (same GradCAM, same full-frame bbox synthesis, same overlay rendering) — only the weights differ.
 
 ---
 

@@ -275,7 +275,8 @@ See [docs/MODELS.md](docs/MODELS.md) for detailed configuration of both fire-det
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System components, data flow, deployment diagrams
-- [docs/MODELS.md](docs/MODELS.md) — Available models (fire-detect-nn, YOLOv8) and how to swap them
+- [docs/MODELS.md](docs/MODELS.md) — Available models (fire-detect-nn, YOLOv8, firewatch) and how to swap them
+- [docs/TRAINING.md](docs/TRAINING.md) — Train your own DenseNet121 fire classifier on D-Fire
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — Local stack, running each component, pytest, debugging
 - [docs/SCALING.md](docs/SCALING.md) — Horizontal scaling guide
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — Throughput tuning, current optimizations, bottlenecks

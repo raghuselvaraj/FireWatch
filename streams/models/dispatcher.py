@@ -1,6 +1,7 @@
 """Unified ``FireDetectionModel`` that dispatches to a backend.
 
-Loads either :class:`~streams.models.fire_detect_nn.FireDetectNN` or
+Loads :class:`~streams.models.fire_detect_nn.FireDetectNN`,
+:class:`~streams.models.firewatch.FireWatch`, or
 :class:`~streams.models.yolov8.YOLOv8Detector` depending on ``ML_MODEL_TYPE``
 (and the legacy ``ML_MODEL_SOURCE`` alias). The dispatcher itself owns the
 config plumbing so the backends stay decoupled from the env.
@@ -19,9 +20,10 @@ warnings.filterwarnings("ignore", message=".*x265.*")
 
 # Pre-check that fire-detect-nn is importable when configured. This early
 # warning is helpful at startup; the actual import still happens lazily inside
-# the backend's loader.
+# the backend's loader. The `firewatch` backend also depends on the
+# fire-detect-nn package (it reuses FireClassifier), so include it here.
 FIRE_DETECT_NN_AVAILABLE = False
-if config.ML_MODEL_TYPE == "fire-detect-nn" or config.ML_MODEL_SOURCE == "fire-detect-nn":
+if config.ML_MODEL_TYPE in ("fire-detect-nn", "firewatch") or config.ML_MODEL_SOURCE == "fire-detect-nn":
     try:
         import fire_detect_nn  # noqa: F401
 
@@ -37,7 +39,7 @@ class FireDetectionModel:
     Reads its configuration from :mod:`config` and constructs the appropriate
     backend. Exposes ``predict(frame) -> dict`` (matching either backend) and
     keeps the same public attributes the old monolith had: ``model``,
-    ``device`` (fire-detect-nn only), ``fire_transform`` (ditto),
+    ``device`` (classifier backends only), ``fire_transform`` (ditto),
     ``confidence_threshold``, ``iou_threshold``, ``use_fire_detect_nn``.
     """
 
@@ -52,7 +54,19 @@ class FireDetectionModel:
             self.model_type == "fire-detect-nn" or self.model_source == "fire-detect-nn"
         )
 
-        if self.use_fire_detect_nn:
+        if self.model_type == "firewatch":
+            from streams.models.firewatch import FireWatch
+
+            self._backend = FireWatch(
+                model_path=getattr(config, "FIREWATCH_MODEL_PATH", "models/firewatch-v1.pt"),
+                confidence_threshold=self.confidence_threshold,
+                gradcam_every_n_fire_frames=getattr(config, "GRADCAM_EVERY_N_FIRE_FRAMES", 1),
+            )
+            self.model = self._backend.model
+            self.device = self._backend.device
+            self.fire_transform = self._backend.fire_transform
+            print("firewatch model initialized (DenseNet121, in-house trained)")
+        elif self.use_fire_detect_nn:
             from streams.models.fire_detect_nn import FireDetectNN
 
             self._backend = FireDetectNN(

@@ -1,0 +1,24 @@
+# Default training config for the FireWatch DenseNet121 classifier.
+# Override any field via CLI: `python -m training.train --epochs 2 --batch_size 16`.
+
+data:
+  cache_dir: ~/.cache/firewatch     # D-Fire is cloned to <cache_dir>/dfire/
+  num_workers: 4                    # DataLoader workers (drop to 0 if MPS multiprocessing flakes)
+  val_frac: 0.1                     # Fraction of train/ to use for validation
+  val_seed: 4822                    # Fixed seed for the train/val split (matches upstream convention)
+
+model:
+  backbone: densenet121
+  pretrained: true                  # Use ImageNet-init weights as starting point
+
+training:
+  batch_size: 32
+  epochs: 20
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 1                  # Linear warmup before cosine schedule kicks in
+  threshold: 0.5                    # Probability threshold for "fire" at eval time
+
+logging:
+  run_dir: training/runs            # TensorBoard + checkpoints land in <run_dir>/<run_id>/
+  log_every_n_steps: 50

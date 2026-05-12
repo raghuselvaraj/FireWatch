@@ -21,14 +21,20 @@ FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "640"))
 FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "480"))
 
 # ML Model Configuration
-# Default: fire-detect-nn (DenseNet121) - recommended for fire detection with GradCAM heatmaps
-# Alternative: ultralytics (YOLOv8) - set ML_MODEL_TYPE=ultralytics to use
-ML_MODEL_TYPE = os.getenv("ML_MODEL_TYPE", "fire-detect-nn")  # 'ultralytics' or 'fire-detect-nn'
+# Supported ML_MODEL_TYPE values:
+#   'fire-detect-nn' (default) — upstream pretrained DenseNet121 with GradCAM
+#   'ultralytics'              — YOLOv8 (bounding-box detector)
+#   'firewatch'                — DenseNet121 trained in-house via `training/` (see docs/TRAINING.md)
+ML_MODEL_TYPE = os.getenv("ML_MODEL_TYPE", "fire-detect-nn")
 ML_MODEL_PATH = os.getenv("ML_MODEL_PATH", "models/fire_detection_model.pt")
 ML_MODEL_SOURCE = os.getenv("ML_MODEL_SOURCE", "fire-detect-nn")  # 'huggingface', 'local', 'roboflow', 'fire-detect-nn', or 'download'
 ML_MODEL_NAME = os.getenv("ML_MODEL_NAME", "touatikamel/yolov8s-forest-fire-detection")  # Only used if ML_MODEL_TYPE=ultralytics
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.5"))  # Binary probability threshold (fire-detect-nn) or YOLOv8 confidence
-IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))  # NMS IoU threshold (YOLOv8 only; ignored for fire-detect-nn)
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.5"))  # Binary probability threshold (fire-detect-nn/firewatch) or YOLOv8 confidence
+IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))  # NMS IoU threshold (YOLOv8 only; ignored for classifier backends)
+
+# Path to the FireWatch-trained checkpoint. Only used when ML_MODEL_TYPE=firewatch.
+# Produced by `python -m training.export --checkpoint <run>/best.pt`.
+FIREWATCH_MODEL_PATH = os.getenv("FIREWATCH_MODEL_PATH", "models/firewatch-v1.pt")
 
 # Video Output Configuration
 CLIP_STORAGE_PATH = os.getenv("CLIP_STORAGE_PATH", "clips")  # Output directory for annotated videos
