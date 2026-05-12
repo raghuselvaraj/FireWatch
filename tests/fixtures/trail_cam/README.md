@@ -10,36 +10,29 @@ This README, and the generated `results.md`, are tracked.
 
 ## Expected clips
 
-Place these files here before running the verification:
-
 | Filename | Duration | Content |
 |---|---|---|
-| `positive_fire.mp4` | 10–60 s | Trail-cam-style fire footage (visible flames, ideally with surrounding forest/structure). |
-| `negative_forest.mp4` | 10–60 s | No-fire forest, trail, or wilderness clip. Daylight; ideally similar lighting to `positive_fire.mp4`. |
-| `mixed_event.mp4` *(optional)* | 30–60 s | Single clip that transitions from no-fire to fire (ignition event). |
+| `positive_fire.mp4` | 5–60 s | Continuous fire footage (visible flames). |
+| `negative_forest.mp4` | 5–60 s | Continuous no-fire forest/trail/wilderness clip. |
+| `mixed_event.mp4` | 5–60 s | Half no-fire + half fire (state transition). |
 
-### Where to source them
+### How to source them
 
-- Personal trail-cam footage if available — preferred for realism.
-- CC0 stock: search Pexels / Pixabay for "forest fire", "wildfire", "campfire".
-- The D-Fire dataset's README links to `gaiasd`'s surveillance video set; those
-  are good `mixed_event` candidates.
-
-### Fallback: synthesize from D-Fire test images
-
-If no real footage is available, `build_synth.py` stitches the three clips
-from the D-Fire test split (each frame has a known label, so ground truth
-falls out for free). Run from the repo root:
+Run the bundled fetcher — it downloads two CC0 clips from Pexels and builds
+`mixed_event.mp4` by concatenating the first 60 frames of each:
 
 ```bash
-python tests/fixtures/trail_cam/build_synth.py
+python tests/fixtures/trail_cam/fetch_real.py
 ```
 
-Produces the three MP4s above plus `ground_truth.json` (per-clip per-frame
-labels) in this directory. Note these are *training-distribution* images
-rather than trail-cam-style footage — they exercise the pipeline correctly
-but don't stress real-world video characteristics. Used for the initial
-Phase 4 verification run; see `results.md`.
+Produces all three MP4s plus `ground_truth.json` (per-clip per-frame labels)
+in this directory. Sources are listed in the script docstring.
+
+If you have your own footage, just drop the three named MP4s in this
+directory and skip `fetch_real.py`; the runners don't care where the clips
+came from. Re-running `fetch_real.py` against existing files is a no-op for
+the downloads but always rebuilds `mixed_event.mp4` + `ground_truth.json`,
+so delete those two if you bring your own and want to skip the concat step.
 
 ## Verification workflow
 
